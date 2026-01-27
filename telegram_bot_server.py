@@ -392,4 +392,5 @@ if __name__ == '__main__':
         print(f'\n❌ Критическая ошибка: {type(e).__name__}: {e}')
         import traceback
 
+
         traceback.print_exc()
