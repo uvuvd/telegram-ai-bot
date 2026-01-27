@@ -16,7 +16,7 @@ PHONE = '+919036205120'
 
 # OpenRouter API
 OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
-OPENROUTER_API_KEY = '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'
+OPENROUTER_API_KEY = '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'
 MODEL_NAME = 'deepseek/deepseek-r1'  # Исправлено название модели
 
 # Команда активации
@@ -394,3 +394,4 @@ if __name__ == '__main__':
 
 
         traceback.print_exc()
+
