@@ -1,8 +1,7 @@
 import asyncio
 import json
 import os
-import tkinter as tk
-from tkinter import simpledialog
+import sys
 
 import aiohttp
 from telethon import TelegramClient, events
@@ -16,8 +15,8 @@ PHONE = '+919036205120'
 
 # OpenRouter API
 OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
-OPENROUTER_API_KEY = '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'
-MODEL_NAME = 'deepseek/deepseek-r1'
+OPENROUTER_API_KEY = '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'
+MODEL_NAME = 'google/gemini-3-flash-preview'
 
 # Команда активации
 ACTIVATION_COMMAND = 'Ai Edem'
@@ -28,29 +27,6 @@ ACTIVE_CHATS_FILE = 'active_chats.json'
 
 # Имя сессии для Railway (отдельная сессия!)
 SESSION_NAME = 'railway_session'
-
-
-# ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
-def get_code():
-    """Получение кода подтверждения от пользователя"""
-    root = tk.Tk()
-    root.withdraw()
-    code = simpledialog.askstring("Telegram", "Введи код из Telegram:")
-    root.destroy()
-    return code
-
-
-def get_password():
-    """Получение пароля 2FA от пользователя"""
-    root = tk.Tk()
-    root.withdraw()
-    password = simpledialog.askstring("Telegram", "Введи пароль 2FA:", show='*')
-    root.destroy()
-    return password
-
-
-# Инициализация Telegram клиента с новым именем сессии
-client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
 
 # ============ РАБОТА С БАЗОЙ ДАННЫХ ============
@@ -190,7 +166,6 @@ def get_chat_history(chat_id, limit=10):
     if chat_key not in db:
         db[chat_key] = []
 
-    # Фильтруем сообщения с ошибками API из истории
     filtered_history = [
         msg for msg in db[chat_key]
         if not (msg.get('role') == 'assistant' and
@@ -207,7 +182,6 @@ def save_message(chat_id, role, content):
     if chat_key not in db:
         db[chat_key] = []
 
-    # Не сохраняем ошибки API в историю
     if role == 'assistant' and ('Ошибка API' in content or 'Произошла ошибка при обращении к API' in content):
         return
 
@@ -216,7 +190,6 @@ def save_message(chat_id, role, content):
         'content': content
     })
 
-    # Ограничение истории 100 сообщениями
     if len(db[chat_key]) > 100:
         db[chat_key] = db[chat_key][-100:]
 
@@ -232,12 +205,15 @@ def clear_chat_history(chat_id):
         print(f'🗑️ История чата {chat_id} очищена')
 
 
+# Инициализация Telegram клиента
+client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+
+
 # ============ ОБРАБОТЧИК СООБЩЕНИЙ ============
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
     """Основной обработчик входящих сообщений"""
     try:
-        # Игнорируем собственные сообщения
         if event.out:
             return
 
@@ -246,9 +222,6 @@ async def handler(event):
 
         print(f'📨 Получено сообщение в чате {chat_id}: {message_text[:50]}...')
 
-        # ========== КОМАНДЫ УПРАВЛЕНИЯ ==========
-
-        # Активация бота в чате
         if ACTIVATION_COMMAND.lower() in message_text.lower():
             activate_chat(chat_id)
             await event.respond(f'✅ Бот активирован! Теперь я буду отвечать на все сообщения в этом чате.\n\n'
@@ -257,25 +230,20 @@ async def handler(event):
                                 f'• "Ai Clear" - очистить историю чата')
             return
 
-        # Деактивация бота
         if 'ai stop' in message_text.lower():
             deactivate_chat(chat_id)
             await event.respond('❌ Бот деактивирован. Напишите "Ai Edem" для повторной активации.')
             return
 
-        # Очистка истории
         if 'ai clear' in message_text.lower():
             if is_chat_active(chat_id):
                 clear_chat_history(chat_id)
                 await event.respond('🗑️ История диалога очищена!')
             return
 
-        # Проверка, активен ли бот в этом чате
         if not is_chat_active(chat_id):
             print(f'⏭️ Чат {chat_id} не активен, пропускаем')
             return
-
-        # ========== ОБРАБОТКА МЕДИАФАЙЛОВ ==========
 
         if event.message.voice:
             try:
@@ -306,8 +274,6 @@ async def handler(event):
         if not message_text.strip():
             message_text = 'сообщение без текста'
 
-        # ========== ПОЛУЧЕНИЕ ОТВЕТА ОТ AI ==========
-
         save_message(chat_id, 'user', message_text)
         history = get_chat_history(chat_id)
 
@@ -323,8 +289,6 @@ async def handler(event):
 
         if response and not response.startswith('Ошибка'):
             save_message(chat_id, 'assistant', response)
-
-        # ========== ОТПРАВКА ОТВЕТА ==========
 
         try:
             await event.respond(response)
@@ -353,21 +317,32 @@ async def main():
     print(f'📁 Рабочая директория: {os.getcwd()}')
     print(f'📝 Используется сессия: {SESSION_NAME}.session')
 
+    # КРИТИЧЕСКИ ВАЖНО: Проверка наличия файла сессии
+    session_file = f'{SESSION_NAME}.session'
+    if not os.path.exists(session_file):
+        print(f'\n❌ ОШИБКА: Файл сессии "{session_file}" не найден!')
+        print(f'\n📋 Инструкция по созданию сессии:')
+        print(f'1. Запустите локально на своём компьютере: python create_session.py')
+        print(f'2. Введите код из Telegram')
+        print(f'3. Загрузите созданный файл "{session_file}" в GitHub репозиторий')
+        print(f'4. Railway автоматически перезапустит бота\n')
+        sys.exit(1)
+
     try:
         await client.connect()
         print('✅ Подключение к Telegram установлено')
 
+        # Проверка авторизации
         if not await client.is_user_authorized():
-            print('📱 Требуется авторизация...')
-            await client.send_code_request(PHONE)
-            code = get_code()
-
-            try:
-                await client.sign_in(PHONE, code)
-            except Exception as e:
-                print(f'⚠️ Требуется 2FA: {e}')
-                password = get_password()
-                await client.sign_in(password=password)
+            print('\n❌ ОШИБКА: Сессия не авторизована!')
+            print('\n📋 Файл сессии существует, но не содержит авторизации.')
+            print('Это означает, что файл создан неправильно или повреждён.\n')
+            print('Решение:')
+            print('1. Удалите файл railway_session.session с Railway/GitHub')
+            print('2. Запустите локально: python create_session.py')
+            print('3. Дождитесь успешной авторизации')
+            print('4. Загрузите новый файл в GitHub\n')
+            sys.exit(1)
 
         print('✅ Бот успешно запущен!')
         me = await client.get_me()
@@ -384,6 +359,7 @@ async def main():
         print(f'❌ Ошибка запуска: {type(e).__name__}: {e}')
         import traceback
         traceback.print_exc()
+        sys.exit(1)
 
 
 # ============ ЗАПУСК ПРОГРАММЫ ============
@@ -396,3 +372,4 @@ if __name__ == '__main__':
         print(f'\n❌ Критическая ошибка: {type(e).__name__}: {e}')
         import traceback
         traceback.print_exc()
+        sys.exit(1)
