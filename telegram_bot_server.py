@@ -16,8 +16,8 @@ PHONE = '+919036205120'
 
 # OpenRouter API
 OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
-OPENROUTER_API_KEY = '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'
-MODEL_NAME = 'deepseek/deepseek-r1'  # Исправлено название модели
+OPENROUTER_API_KEY = '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'
+MODEL_NAME = 'google/gemini-3-flash-preview'  # Исправлено название модели
 
 # Команда активации
 ACTIVATION_COMMAND = 'Ai Edem'
@@ -394,4 +394,5 @@ if __name__ == '__main__':
 
 
         traceback.print_exc()
+
 
