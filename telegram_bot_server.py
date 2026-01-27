@@ -16,8 +16,8 @@ PHONE = '+919036205120'
 
 # OpenRouter API
 OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
-OPENROUTER_API_KEY = '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'
-MODEL_NAME = 'google/gemini-3-flash-preview'  # Исправлено название модели
+OPENROUTER_API_KEY = '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'
+MODEL_NAME = 'deepseek/deepseek-r1'
 
 # Команда активации
 ACTIVATION_COMMAND = 'Ai Edem'
@@ -25,6 +25,9 @@ ACTIVATION_COMMAND = 'Ai Edem'
 # Файлы базы данных
 DB_FILE = 'messages.json'
 ACTIVE_CHATS_FILE = 'active_chats.json'
+
+# Имя сессии для Railway (отдельная сессия!)
+SESSION_NAME = 'railway_session'
 
 
 # ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
@@ -46,8 +49,8 @@ def get_password():
     return password
 
 
-# Инициализация Telegram клиента
-client = TelegramClient('session', API_ID, API_HASH)
+# Инициализация Telegram клиента с новым именем сессии
+client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
 
 # ============ РАБОТА С БАЗОЙ ДАННЫХ ============
@@ -126,14 +129,14 @@ async def get_ai_response(messages):
     messages - список сообщений в формате [{'role': 'user/assistant', 'content': 'текст'}]
     """
     try:
-        timeout = aiohttp.ClientTimeout(total=120)  # Увеличен таймаут
+        timeout = aiohttp.ClientTimeout(total=120)
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
             payload = {
                 'model': MODEL_NAME,
                 'messages': messages,
                 'temperature': 0.7,
-                'max_tokens': 2048  # Увеличено количество токенов
+                'max_tokens': 2048
             }
 
             headers = {
@@ -181,7 +184,7 @@ async def analyze_photo(photo_data):
 
 
 # ============ РАБОТА С ИСТОРИЕЙ ЧАТА ============
-def get_chat_history(chat_id, limit=10):  # Уменьшен лимит для экономии токенов
+def get_chat_history(chat_id, limit=10):
     """Получение истории сообщений чата"""
     chat_key = str(chat_id)
     if chat_key not in db:
@@ -348,6 +351,7 @@ async def main():
     """Запуск бота"""
     print('🚀 Запуск Telegram бота с AI...')
     print(f'📁 Рабочая директория: {os.getcwd()}')
+    print(f'📝 Используется сессия: {SESSION_NAME}.session')
 
     try:
         await client.connect()
@@ -391,8 +395,4 @@ if __name__ == '__main__':
     except Exception as e:
         print(f'\n❌ Критическая ошибка: {type(e).__name__}: {e}')
         import traceback
-
-
         traceback.print_exc()
-
-
