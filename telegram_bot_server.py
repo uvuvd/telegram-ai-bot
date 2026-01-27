@@ -15,7 +15,7 @@ PHONE = '+919036205120'
 
 # OpenRouter API
 OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
-OPENROUTER_API_KEY = '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'
+OPENROUTER_API_KEY = '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'
 MODEL_NAME = 'google/gemini-3-flash-preview'
 
 # Команда активации
@@ -98,11 +98,11 @@ def deactivate_chat(chat_id):
 db = load_db()
 
 
-# ============ РАБОТА С AI API ============
+# ============ РАБОТА С AI API (С REASONING) ============
 async def get_ai_response(messages):
     """
-    Получение ответа от AI API
-    messages - список сообщений в формате [{'role': 'user/assistant', 'content': 'текст'}]
+    Получение ответа от AI API с поддержкой reasoning (рассуждений)
+    messages - список сообщений в формате [{'role': 'user/assistant', 'content': 'текст', 'reasoning_details': ...}]
     """
     try:
         timeout = aiohttp.ClientTimeout(total=120)
@@ -112,7 +112,8 @@ async def get_ai_response(messages):
                 'model': MODEL_NAME,
                 'messages': messages,
                 'temperature': 0.7,
-                'max_tokens': 2048
+                'max_tokens': 2048,
+                'reasoning': {'enabled': True}  # Включаем reasoning для Gemini
             }
 
             headers = {
@@ -122,30 +123,37 @@ async def get_ai_response(messages):
                 'X-Title': 'Telegram AI Bot'
             }
 
-            print(f'🔄 Отправка запроса к API...')
+            print(f'🔄 Отправка запроса к API с reasoning...')
             async with session.post(OPENROUTER_API_URL, json=payload, headers=headers) as resp:
                 response_text = await resp.text()
                 print(f'📥 Ответ API (статус {resp.status}): {response_text[:200]}...')
 
                 if resp.status == 200:
                     result = json.loads(response_text)
-                    content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+                    message = result.get('choices', [{}])[0].get('message', {})
+                    content = message.get('content', '')
+                    reasoning_details = message.get('reasoning_details')  # Сохраняем reasoning
+                    
                     if content:
-                        return content.strip()
-                    return 'Не понял ваш вопрос'
+                        # Возвращаем контент и reasoning_details для сохранения в историю
+                        return {
+                            'content': content.strip(),
+                            'reasoning_details': reasoning_details
+                        }
+                    return {'content': 'Не понял ваш вопрос', 'reasoning_details': None}
                 else:
                     print(f'❌ API ошибка {resp.status}: {response_text}')
-                    return f'Ошибка API ({resp.status}). Попробуйте позже.'
+                    return {'content': f'Ошибка API ({resp.status}). Попробуйте позже.', 'reasoning_details': None}
 
     except asyncio.TimeoutError:
         print('⏱️ API таймаут')
-        return 'Извините, слишком долго обрабатываю запрос'
+        return {'content': 'Извините, слишком долго обрабатываю запрос', 'reasoning_details': None}
     except json.JSONDecodeError as e:
         print(f'❌ Ошибка парсинга JSON: {e}')
-        return 'Ошибка обработки ответа от API'
+        return {'content': 'Ошибка обработки ответа от API', 'reasoning_details': None}
     except Exception as e:
         print(f'❌ Ошибка API: {type(e).__name__}: {e}')
-        return 'Не смог сформировать ответ'
+        return {'content': 'Не смог сформировать ответ', 'reasoning_details': None}
 
 
 # ============ РАБОТА С МЕДИАФАЙЛАМИ ============
@@ -161,7 +169,7 @@ async def analyze_photo(photo_data):
 
 # ============ РАБОТА С ИСТОРИЕЙ ЧАТА ============
 def get_chat_history(chat_id, limit=10):
-    """Получение истории сообщений чата"""
+    """Получение истории сообщений чата с поддержкой reasoning"""
     chat_key = str(chat_id)
     if chat_key not in db:
         db[chat_key] = []
@@ -176,8 +184,8 @@ def get_chat_history(chat_id, limit=10):
     return filtered_history[-limit:]
 
 
-def save_message(chat_id, role, content):
-    """Сохранение сообщения в историю"""
+def save_message(chat_id, role, content, reasoning_details=None):
+    """Сохранение сообщения в историю с поддержкой reasoning_details"""
     chat_key = str(chat_id)
     if chat_key not in db:
         db[chat_key] = []
@@ -185,10 +193,16 @@ def save_message(chat_id, role, content):
     if role == 'assistant' and ('Ошибка API' in content or 'Произошла ошибка при обращении к API' in content):
         return
 
-    db[chat_key].append({
+    message = {
         'role': role,
         'content': content
-    })
+    }
+    
+    # Сохраняем reasoning_details для сообщений ассистента
+    if role == 'assistant' and reasoning_details:
+        message['reasoning_details'] = reasoning_details
+
+    db[chat_key].append(message)
 
     if len(db[chat_key]) > 100:
         db[chat_key] = db[chat_key][-100:]
@@ -274,7 +288,10 @@ async def handler(event):
         if not message_text.strip():
             message_text = 'сообщение без текста'
 
+        # Сохраняем сообщение пользователя
         save_message(chat_id, 'user', message_text)
+        
+        # Получаем историю с reasoning_details
         history = get_chat_history(chat_id)
 
         system_message = {
@@ -284,15 +301,21 @@ async def handler(event):
 
         messages_for_api = [system_message] + history
 
-        print(f'🤖 Запрос к AI с {len(history)} сообщениями в истории')
+        print(f'🤖 Запрос к AI с {len(history)} сообщениями в истории (с reasoning)')
         response = await get_ai_response(messages_for_api)
 
-        if response and not response.startswith('Ошибка'):
-            save_message(chat_id, 'assistant', response)
+        # response теперь словарь с content и reasoning_details
+        content = response.get('content', 'Не смог сформировать ответ')
+        reasoning_details = response.get('reasoning_details')
+
+        if content and not content.startswith('Ошибка'):
+            save_message(chat_id, 'assistant', content, reasoning_details)
 
         try:
-            await event.respond(response)
-            print(f'✅ Отправлен ответ в чат {chat_id}: {response[:50]}...')
+            await event.respond(content)
+            print(f'✅ Отправлен ответ в чат {chat_id}: {content[:50]}...')
+            if reasoning_details:
+                print(f'🧠 Reasoning сохранён для контекста')
 
         except RPCError as e:
             if 'TOPIC_CLOSED' in str(e) or 'CHAT_WRITE_FORBIDDEN' in str(e):
@@ -313,7 +336,7 @@ async def handler(event):
 # ============ ГЛАВНАЯ ФУНКЦИЯ ============
 async def main():
     """Запуск бота"""
-    print('🚀 Запуск Telegram бота с AI...')
+    print('🚀 Запуск Telegram бота с AI (Gemini + Reasoning)...')
     print(f'📁 Рабочая директория: {os.getcwd()}')
     print(f'📝 Используется сессия: {SESSION_NAME}.session')
 
@@ -347,7 +370,7 @@ async def main():
         print('✅ Бот успешно запущен!')
         me = await client.get_me()
         print(f'👤 Аккаунт: {me.username or me.first_name}')
-        print(f'🤖 Модель: {MODEL_NAME}')
+        print(f'🤖 Модель: {MODEL_NAME} (с reasoning)')
         print(f'🔑 Команда активации: "{ACTIVATION_COMMAND}"')
         print('\n📝 Для активации бота в чате напишите: Ai Edem')
         print('⏹️ Для остановки нажмите Ctrl+C\n')
