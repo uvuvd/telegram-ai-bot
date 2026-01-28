@@ -12,14 +12,14 @@ from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 
 # ============ КОНФИГУРАЦИЯ ============
 # Telegram API (получить на https://my.telegram.org)
-API_ID = 39678712
-API_HASH = '3089ac53d532e75deb5dd641e4863d49'
-PHONE = '+919036205120'
+API_ID = int(os.environ.get('API_ID', '39678712'))
+API_HASH = os.environ.get('API_HASH', '3089ac53d532e75deb5dd641e4863d49')
+PHONE = os.environ.get('PHONE', '+919036205120')
 
 # OpenRouter API
 OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
-OPENROUTER_API_KEY = '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'
-MODEL_NAME = 'google/gemini-3-flash-preview'
+OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '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')
+MODEL_NAME = os.environ.get('MODEL_NAME', 'google/gemini-3-flash-preview')
 
 # Команда активации AI
 ACTIVATION_COMMAND = 'Ai Edem'
