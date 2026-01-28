@@ -397,11 +397,7 @@ client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
 # ============ ОБРАБОТЧИКИ КОМАНД УПРАВЛЕНИЯ СОХРАНЕНИЕМ (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА) ============
 async def handle_saver_commands(event, message_text):
-    """Обработка команд управления сохранением удаленных сообщений (только для владельца)"""
-    
-    # КРИТИЧНО: Проверка, что команду отправил владелец аккаунта
-    if event.sender_id != OWNER_ID:
-        return False
+    """Обработка команд управления сохранением удаленных сообщений"""
     
     chat_id = event.chat_id
     
@@ -702,47 +698,19 @@ async def deleted_message_handler(event):
         print(f'⚠️ Ошибка обработки удаленного сообщения: {e}')
 
 
-# ============ ОБРАБОТЧИК ВХОДЯЩИХ СООБЩЕНИЙ (AI) ============
+# ============ ОБРАБОТЧИК ВХОДЯЩИХ СООБЩЕНИЙ ОТ ДРУГИХ (для AI ответов) ============
 @client.on(events.NewMessage(incoming=True))
-async def handler(event):
-    """Основной обработчик входящих сообщений (AI)"""
+async def incoming_handler(event):
+    """Обработчик входящих сообщений от других пользователей - только для AI ответов"""
     try:
-        # Пропускаем свои сообщения
-        if event.out:
-            return
-
         chat_id = event.chat_id
-        message_text = event.message.message or ''
-
-        # КРИТИЧНО: Проверка команд управления сохранением (только для владельца)
-        if message_text.lower().startswith('.saver'):
-            handled = await handle_saver_commands(event, message_text)
-            if handled:
-                return
-
-        # AI команды доступны всем (как и раньше)
-        if ACTIVATION_COMMAND.lower() in message_text.lower():
-            activate_chat(chat_id)
-            await event.respond(f'✅ AI-ассистент активирован! Теперь я буду отвечать на все сообщения в этом чате.\n\n'
-                                f'**Команды:**\n'
-                                f'• "Ai Stop" - деактивировать ассистента\n'
-                                f'• "Ai Clear" - очистить историю диалога')
-            return
-
-        if 'ai stop' in message_text.lower():
-            deactivate_chat(chat_id)
-            await event.respond('❌ AI-ассистент деактивирован. Напишите "Ai Edem" для повторной активации.')
-            return
-
-        if 'ai clear' in message_text.lower():
-            if is_chat_active(chat_id):
-                clear_chat_history(chat_id)
-                await event.respond('🗑️ История диалога очищена!')
-            return
-
+        
+        # Проверяем, активен ли AI в этом чате
         if not is_chat_active(chat_id):
             return
-
+        
+        message_text = event.message.message or ''
+        
         # Обработка медиа
         if event.message.voice:
             try:
@@ -810,7 +778,47 @@ async def handler(event):
             print(f'❌ Ошибка отправки сообщения: {type(e).__name__}: {e}')
 
     except Exception as e:
-        print(f'❌ Критическая ошибка обработки сообщения: {type(e).__name__}: {e}')
+        print(f'❌ Критическая ошибка обработки входящего сообщения: {type(e).__name__}: {e}')
+        import traceback
+        traceback.print_exc()
+
+
+# ============ ОБРАБОТЧИК ИСХОДЯЩИХ СООБЩЕНИЙ (ваши команды) ============
+@client.on(events.NewMessage(outgoing=True))
+async def outgoing_handler(event):
+    """Основной обработчик ВАШИХ сообщений (команды .saver и AI)"""
+    try:
+        chat_id = event.chat_id
+        message_text = event.message.message or ''
+
+        # ПРИОРИТЕТ 1: Проверка команд управления сохранением
+        if message_text.lower().startswith('.saver'):
+            handled = await handle_saver_commands(event, message_text)
+            if handled:
+                return
+
+        # ПРИОРИТЕТ 2: AI команды управления
+        if ACTIVATION_COMMAND.lower() in message_text.lower():
+            activate_chat(chat_id)
+            await event.respond(f'✅ AI-ассистент активирован! Теперь я буду отвечать на все сообщения в этом чате.\n\n'
+                                f'**Команды:**\n'
+                                f'• "Ai Stop" - деактивировать ассистента\n'
+                                f'• "Ai Clear" - очистить историю диалога')
+            return
+
+        if 'ai stop' in message_text.lower():
+            deactivate_chat(chat_id)
+            await event.respond('❌ AI-ассистент деактивирован. Напишите "Ai Edem" для повторной активации.')
+            return
+
+        if 'ai clear' in message_text.lower():
+            if is_chat_active(chat_id):
+                clear_chat_history(chat_id)
+                await event.respond('🗑️ История диалога очищена!')
+            return
+
+    except Exception as e:
+        print(f'❌ Ошибка обработки исходящего сообщения: {type(e).__name__}: {e}')
         import traceback
         traceback.print_exc()
 
