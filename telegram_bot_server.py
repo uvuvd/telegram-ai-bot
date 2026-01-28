@@ -2,10 +2,13 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime
+from pathlib import Path
 
 import aiohttp
 from telethon import TelegramClient, events
 from telethon.errors import RPCError
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 
 # ============ КОНФИГУРАЦИЯ ============
 # Telegram API (получить на https://my.telegram.org)
@@ -24,9 +27,14 @@ ACTIVATION_COMMAND = 'Ai Edem'
 # Файлы базы данных
 DB_FILE = 'messages.json'
 ACTIVE_CHATS_FILE = 'active_chats.json'
+DELETED_MESSAGES_DB = 'deleted_messages.json'
+SAVER_CONFIG_FILE = 'saver_config.json'
 
 # Имя сессии для Railway (отдельная сессия!)
 SESSION_NAME = 'railway_session'
+
+# Папка для сохранения медиафайлов
+MEDIA_FOLDER = 'saved_media'
 
 
 # ============ РАБОТА С БАЗОЙ ДАННЫХ ============
@@ -94,8 +102,169 @@ def deactivate_chat(chat_id):
     print(f'❌ Чат {chat_id} деактивирован')
 
 
+# ============ РАБОТА С СОХРАНЕНИЕМ УДАЛЕННЫХ СООБЩЕНИЙ ============
+def load_deleted_messages_db():
+    """Загрузка базы удаленных сообщений"""
+    if os.path.exists(DELETED_MESSAGES_DB):
+        try:
+            with open(DELETED_MESSAGES_DB, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f'⚠️ Ошибка загрузки БД удаленных сообщений: {e}')
+            return {}
+    return {}
+
+
+def save_deleted_messages_db(data):
+    """Сохранение базы удаленных сообщений"""
+    try:
+        with open(DELETED_MESSAGES_DB, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f'⚠️ Ошибка сохранения БД удаленных сообщений: {e}')
+
+
+def load_saver_config():
+    """Загрузка конфигурации сохранения"""
+    if os.path.exists(SAVER_CONFIG_FILE):
+        try:
+            with open(SAVER_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f'⚠️ Ошибка загрузки конфигурации сохранения: {e}')
+            return {
+                'save_private': False,
+                'save_groups': False,
+                'save_channels': [],
+                'save_media': True,
+                'save_ttl': True
+            }
+    return {
+        'save_private': False,
+        'save_groups': False,
+        'save_channels': [],
+        'save_media': True,
+        'save_ttl': True
+    }
+
+
+def save_saver_config(config):
+    """Сохранение конфигурации сохранения"""
+    try:
+        with open(SAVER_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f'⚠️ Ошибка сохранения конфигурации: {e}')
+
+
+def should_save_message(chat_id, is_private, is_group):
+    """Проверка, нужно ли сохранять сообщения из этого чата"""
+    config = load_saver_config()
+    chat_id_str = str(chat_id)
+    
+    # Проверка личных сообщений
+    if is_private and config['save_private']:
+        return True
+    
+    # Проверка групп
+    if is_group and config['save_groups']:
+        return True
+    
+    # Проверка каналов
+    if chat_id_str in config['save_channels']:
+        return True
+    
+    return False
+
+
+def add_deleted_message(chat_id, message_data):
+    """Добавление удаленного сообщения в БД"""
+    db = load_deleted_messages_db()
+    chat_key = str(chat_id)
+    
+    if chat_key not in db:
+        db[chat_key] = []
+    
+    db[chat_key].append(message_data)
+    
+    # Ограничение: храним последние 500 удаленных сообщений на чат
+    if len(db[chat_key]) > 500:
+        db[chat_key] = db[chat_key][-500:]
+    
+    save_deleted_messages_db(db)
+
+
+def get_deleted_messages(chat_id, limit=50):
+    """Получение удаленных сообщений из чата"""
+    db = load_deleted_messages_db()
+    chat_key = str(chat_id)
+    
+    if chat_key not in db:
+        return []
+    
+    return db[chat_key][-limit:]
+
+
+def clear_deleted_messages(chat_id):
+    """Очистка удаленных сообщений чата"""
+    db = load_deleted_messages_db()
+    chat_key = str(chat_id)
+    
+    if chat_key in db:
+        db[chat_key] = []
+        save_deleted_messages_db(db)
+
+
+async def save_media_file(message, media_folder=MEDIA_FOLDER):
+    """Сохранение медиафайла из сообщения"""
+    try:
+        # Создаем папку если не существует
+        Path(media_folder).mkdir(parents=True, exist_ok=True)
+        
+        # Генерируем уникальное имя файла
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        chat_id = message.chat_id
+        msg_id = message.id
+        
+        # Определяем тип медиа и расширение
+        if message.photo:
+            extension = 'jpg'
+            media_type = 'photo'
+        elif message.video:
+            extension = 'mp4'
+            media_type = 'video'
+        elif message.document:
+            # Пытаемся получить расширение из имени файла
+            if hasattr(message.document, 'attributes'):
+                for attr in message.document.attributes:
+                    if hasattr(attr, 'file_name'):
+                        extension = attr.file_name.split('.')[-1] if '.' in attr.file_name else 'bin'
+                        break
+                else:
+                    extension = 'bin'
+            else:
+                extension = 'bin'
+            media_type = 'document'
+        else:
+            return None
+        
+        filename = f'{media_type}_{chat_id}_{msg_id}_{timestamp}.{extension}'
+        filepath = os.path.join(media_folder, filename)
+        
+        # Скачиваем файл
+        await message.download_media(filepath)
+        
+        print(f'💾 Сохранен файл: {filename}')
+        return filepath
+        
+    except Exception as e:
+        print(f'⚠️ Ошибка сохранения медиа: {e}')
+        return None
+
+
 # Загрузка базы данных
 db = load_db()
+messages_cache = {}  # Кеш для отслеживания сообщений
 
 
 # ============ РАБОТА С AI API (С REASONING) ============
@@ -223,7 +392,241 @@ def clear_chat_history(chat_id):
 client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
 
-# ============ ОБРАБОТЧИК СООБЩЕНИЙ ============
+# ============ ОБРАБОТЧИКИ КОМАНД УПРАВЛЕНИЯ СОХРАНЕНИЕМ ============
+async def handle_saver_commands(event, message_text):
+    """Обработка команд управления сохранением удаленных сообщений"""
+    chat_id = event.chat_id
+    
+    # Показать статус сохранения
+    if message_text.lower() == 'ai saver status':
+        config = load_saver_config()
+        status_text = '📊 **Статус сохранения удаленных сообщений:**\n\n'
+        status_text += f'💬 Личные сообщения: {"✅ Включено" if config["save_private"] else "❌ Выключено"}\n'
+        status_text += f'👥 Группы: {"✅ Включено" if config["save_groups"] else "❌ Выключено"}\n'
+        status_text += f'📺 Сохранение медиа: {"✅ Включено" if config["save_media"] else "❌ Выключено"}\n'
+        status_text += f'⏱️ Скоротечные фото: {"✅ Включено" if config["save_ttl"] else "❌ Выключено"}\n'
+        status_text += f'\n📢 Отслеживаемые каналы: {len(config["save_channels"])}\n'
+        
+        if config["save_channels"]:
+            status_text += '\nСписок каналов:\n'
+            for channel_id in config["save_channels"][:10]:
+                status_text += f'• ID: {channel_id}\n'
+            if len(config["save_channels"]) > 10:
+                status_text += f'... и еще {len(config["save_channels"]) - 10} каналов\n'
+        
+        await event.respond(status_text)
+        return True
+    
+    # Включить сохранение личных сообщений
+    if message_text.lower() == 'ai saver private on':
+        config = load_saver_config()
+        config['save_private'] = True
+        save_saver_config(config)
+        await event.respond('✅ Сохранение удаленных сообщений из **личных чатов** включено!')
+        return True
+    
+    # Выключить сохранение личных сообщений
+    if message_text.lower() == 'ai saver private off':
+        config = load_saver_config()
+        config['save_private'] = False
+        save_saver_config(config)
+        await event.respond('❌ Сохранение удаленных сообщений из **личных чатов** выключено!')
+        return True
+    
+    # Включить сохранение групп
+    if message_text.lower() == 'ai saver groups on':
+        config = load_saver_config()
+        config['save_groups'] = True
+        save_saver_config(config)
+        await event.respond('✅ Сохранение удаленных сообщений из **групп** включено!')
+        return True
+    
+    # Выключить сохранение групп
+    if message_text.lower() == 'ai saver groups off':
+        config = load_saver_config()
+        config['save_groups'] = False
+        save_saver_config(config)
+        await event.respond('❌ Сохранение удаленных сообщений из **групп** выключено!')
+        return True
+    
+    # Добавить канал для отслеживания
+    if message_text.lower().startswith('ai saver add'):
+        # Можно добавить текущий чат или указать ID
+        config = load_saver_config()
+        chat_id_str = str(chat_id)
+        
+        if chat_id_str not in config['save_channels']:
+            config['save_channels'].append(chat_id_str)
+            save_saver_config(config)
+            await event.respond(f'✅ Канал/чат (ID: {chat_id}) добавлен в список отслеживания!')
+        else:
+            await event.respond(f'⚠️ Этот канал/чат уже в списке отслеживания!')
+        return True
+    
+    # Удалить канал из отслеживания
+    if message_text.lower().startswith('ai saver remove'):
+        config = load_saver_config()
+        chat_id_str = str(chat_id)
+        
+        if chat_id_str in config['save_channels']:
+            config['save_channels'].remove(chat_id_str)
+            save_saver_config(config)
+            await event.respond(f'❌ Канал/чат (ID: {chat_id}) удален из списка отслеживания!')
+        else:
+            await event.respond(f'⚠️ Этот канал/чат не был в списке отслеживания!')
+        return True
+    
+    # Показать удаленные сообщения
+    if message_text.lower() == 'ai saver show':
+        deleted_msgs = get_deleted_messages(chat_id, limit=10)
+        
+        if not deleted_msgs:
+            await event.respond('📭 Нет сохраненных удаленных сообщений в этом чате.')
+            return True
+        
+        response = f'🗑️ **Последние {len(deleted_msgs)} удаленных сообщений:**\n\n'
+        
+        for i, msg in enumerate(deleted_msgs[-10:], 1):
+            timestamp = msg.get('deleted_at', 'н/д')
+            sender = msg.get('sender_name', 'Неизвестно')
+            text = msg.get('text', '[медиафайл]')[:100]
+            media_info = ''
+            
+            if msg.get('has_photo'):
+                media_info += '📷 '
+            if msg.get('has_video'):
+                media_info += '🎥 '
+            if msg.get('has_document'):
+                media_info += '📎 '
+            if msg.get('is_ttl'):
+                media_info += '⏱️ '
+            
+            response += f'{i}. [{timestamp}] **{sender}**: {media_info}{text}\n\n'
+        
+        await event.respond(response)
+        return True
+    
+    # Очистить сохраненные удаленные сообщения
+    if message_text.lower() == 'ai saver clear':
+        clear_deleted_messages(chat_id)
+        await event.respond('🗑️ Все сохраненные удаленные сообщения из этого чата очищены!')
+        return True
+    
+    # Помощь по командам
+    if message_text.lower() == 'ai saver help':
+        help_text = '''📚 **Команды управления сохранением удаленных сообщений:**
+
+**Управление:**
+• `Ai Saver Status` - показать текущий статус
+• `Ai Saver Private On/Off` - вкл/выкл личные чаты
+• `Ai Saver Groups On/Off` - вкл/выкл группы
+• `Ai Saver Add` - добавить текущий чат в отслеживание
+• `Ai Saver Remove` - удалить текущий чат из отслеживания
+
+**Просмотр:**
+• `Ai Saver Show` - показать последние 10 удаленных сообщений
+• `Ai Saver Clear` - очистить сохраненные удаленные сообщения
+
+**Что сохраняется:**
+✅ Текст сообщений
+✅ Фотографии и видео
+✅ Документы и файлы
+✅ Скоротечные фото (TTL)
+✅ Информация об отправителе
+✅ Время удаления'''
+        
+        await event.respond(help_text)
+        return True
+    
+    return False
+
+
+# ============ ОБРАБОТЧИК НОВЫХ СООБЩЕНИЙ (для кеширования) ============
+@client.on(events.NewMessage)
+async def cache_message_handler(event):
+    """Кеширование сообщений для отслеживания удаления"""
+    try:
+        chat_id = event.chat_id
+        message_id = event.message.id
+        
+        # Проверяем, нужно ли сохранять сообщения из этого чата
+        is_private = event.is_private
+        is_group = event.is_group
+        
+        if not should_save_message(chat_id, is_private, is_group):
+            return
+        
+        # Получаем информацию о сообщении
+        sender = await event.get_sender()
+        sender_name = getattr(sender, 'first_name', 'Неизвестно')
+        if hasattr(sender, 'username') and sender.username:
+            sender_name += f' (@{sender.username})'
+        
+        message_data = {
+            'chat_id': chat_id,
+            'message_id': message_id,
+            'sender_id': event.sender_id,
+            'sender_name': sender_name,
+            'text': event.message.message or '',
+            'date': event.message.date.isoformat() if event.message.date else None,
+            'has_photo': bool(event.message.photo),
+            'has_video': bool(event.message.video),
+            'has_document': bool(event.message.document),
+            'is_ttl': bool(event.message.ttl_period),
+            'media_path': None
+        }
+        
+        # Сохраняем медиафайлы если включено
+        config = load_saver_config()
+        if config['save_media'] and (event.message.photo or event.message.video or event.message.document):
+            media_path = await save_media_file(event.message)
+            message_data['media_path'] = media_path
+        
+        # Сохраняем в кеш
+        cache_key = f'{chat_id}_{message_id}'
+        messages_cache[cache_key] = message_data
+        
+        # Ограничиваем размер кеша
+        if len(messages_cache) > 1000:
+            # Удаляем старые записи
+            old_keys = list(messages_cache.keys())[:500]
+            for key in old_keys:
+                del messages_cache[key]
+        
+    except Exception as e:
+        print(f'⚠️ Ошибка кеширования сообщения: {e}')
+
+
+# ============ ОБРАБОТЧИК УДАЛЕННЫХ СООБЩЕНИЙ ============
+@client.on(events.MessageDeleted)
+async def deleted_message_handler(event):
+    """Обработка удаленных сообщений"""
+    try:
+        chat_id = event.chat_id
+        deleted_ids = event.deleted_ids
+        
+        print(f'🗑️ Обнаружено удаление {len(deleted_ids)} сообщений в чате {chat_id}')
+        
+        for message_id in deleted_ids:
+            cache_key = f'{chat_id}_{message_id}'
+            
+            if cache_key in messages_cache:
+                message_data = messages_cache[cache_key]
+                message_data['deleted_at'] = datetime.now().isoformat()
+                
+                # Сохраняем в базу удаленных сообщений
+                add_deleted_message(chat_id, message_data)
+                
+                print(f'💾 Сохранено удаленное сообщение: {message_id} от {message_data["sender_name"]}')
+                
+                # Удаляем из кеша
+                del messages_cache[cache_key]
+        
+    except Exception as e:
+        print(f'⚠️ Ошибка обработки удаленного сообщения: {e}')
+
+
+# ============ ОБРАБОТЧИК ВХОДЯЩИХ СООБЩЕНИЙ ============
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
     """Основной обработчик входящих сообщений"""
@@ -236,12 +639,22 @@ async def handler(event):
 
         print(f'📨 Получено сообщение в чате {chat_id}: {message_text[:50]}...')
 
+        # Проверка команд управления сохранением
+        if message_text.lower().startswith('ai saver'):
+            handled = await handle_saver_commands(event, message_text)
+            if handled:
+                return
+
         if ACTIVATION_COMMAND.lower() in message_text.lower():
             activate_chat(chat_id)
             await event.respond(f'✅ Бот активирован! Теперь я буду отвечать на все сообщения в этом чате.\n\n'
-                                f'Команды:\n'
+                                f'**Команды AI:**\n'
                                 f'• "Ai Stop" - деактивировать бота\n'
-                                f'• "Ai Clear" - очистить историю чата')
+                                f'• "Ai Clear" - очистить историю чата\n\n'
+                                f'**Команды сохранения удаленных сообщений:**\n'
+                                f'• "Ai Saver Help" - помощь по командам\n'
+                                f'• "Ai Saver Status" - статус сохранения\n'
+                                f'• "Ai Saver Show" - показать удаленные сообщения')
             return
 
         if 'ai stop' in message_text.lower():
@@ -336,9 +749,13 @@ async def handler(event):
 # ============ ГЛАВНАЯ ФУНКЦИЯ ============
 async def main():
     """Запуск бота"""
-    print('🚀 Запуск Telegram бота с AI (Gemini + Reasoning)...')
+    print('🚀 Запуск Telegram бота с AI (Gemini + Reasoning) + Сохранение удаленных сообщений...')
     print(f'📁 Рабочая директория: {os.getcwd()}')
     print(f'📝 Используется сессия: {SESSION_NAME}.session')
+    print(f'💾 Папка для медиа: {MEDIA_FOLDER}')
+
+    # Создаем папку для медиа
+    Path(MEDIA_FOLDER).mkdir(parents=True, exist_ok=True)
 
     # КРИТИЧЕСКИ ВАЖНО: Проверка наличия файла сессии
     session_file = f'{SESSION_NAME}.session'
@@ -372,7 +789,15 @@ async def main():
         print(f'👤 Аккаунт: {me.username or me.first_name}')
         print(f'🤖 Модель: {MODEL_NAME} (с reasoning)')
         print(f'🔑 Команда активации: "{ACTIVATION_COMMAND}"')
+        print(f'💾 Функция сохранения удаленных сообщений: АКТИВНА')
+        
+        config = load_saver_config()
+        print(f'📊 Сохранение личных: {config["save_private"]}')
+        print(f'📊 Сохранение групп: {config["save_groups"]}')
+        print(f'📊 Отслеживаемых каналов: {len(config["save_channels"])}')
+        
         print('\n📝 Для активации бота в чате напишите: Ai Edem')
+        print('📝 Для управления сохранением напишите: Ai Saver Help')
         print('⏹️ Для остановки нажмите Ctrl+C\n')
         print('🎧 Слушаю сообщения...\n')
 
