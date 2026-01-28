@@ -165,18 +165,28 @@ def should_save_message(chat_id, is_private, is_group):
     config = load_saver_config()
     chat_id_str = str(chat_id)
     
+    print(f'🔍 Проверка сохранения для чата {chat_id}:')
+    print(f'   save_private: {config["save_private"]}')
+    print(f'   save_groups: {config["save_groups"]}')
+    print(f'   save_channels: {config["save_channels"]}')
+    print(f'   is_private: {is_private}, is_group: {is_group}')
+    
     # Проверка личных сообщений
     if is_private and config['save_private']:
+        print(f'   ✅ Сохраняем (личный чат)')
         return True
     
     # Проверка групп
     if is_group and config['save_groups']:
+        print(f'   ✅ Сохраняем (группа)')
         return True
     
     # Проверка каналов
     if chat_id_str in config['save_channels']:
+        print(f'   ✅ Сохраняем (в списке каналов)')
         return True
     
+    print(f'   ❌ НЕ сохраняем')
     return False
 
 
@@ -404,7 +414,22 @@ async def handle_saver_commands(event, message_text):
     # Показать статус сохранения
     if message_text.lower() == '.saver status':
         config = load_saver_config()
+        chat_id_str = str(chat_id)
+        
+        # Определяем тип чата
+        is_private = event.is_private
+        is_group = event.is_group
+        chat_type = "личный" if is_private else "группа" if is_group else "канал"
+        
+        # Проверяем, сохраняется ли текущий чат
+        is_saved = should_save_message(chat_id, is_private, is_group)
+        
         status_text = '📊 **Статус сохранения удаленных сообщений:**\n\n'
+        status_text += f'📍 **Текущий чат:**\n'
+        status_text += f'   Тип: {chat_type}\n'
+        status_text += f'   ID: `{chat_id}`\n'
+        status_text += f'   Сохранение: {"✅ ВКЛЮЧЕНО" if is_saved else "❌ ВЫКЛЮЧЕНО"}\n\n'
+        status_text += f'⚙️ **Глобальные настройки:**\n'
         status_text += f'💬 Личные сообщения: {"✅ Включено" if config["save_private"] else "❌ Выключено"}\n'
         status_text += f'👥 Группы: {"✅ Включено" if config["save_groups"] else "❌ Выключено"}\n'
         status_text += f'📺 Сохранение медиа: {"✅ Включено" if config["save_media"] else "❌ Выключено"}\n'
@@ -417,6 +442,15 @@ async def handle_saver_commands(event, message_text):
                 status_text += f'• ID: {channel_id}\n'
             if len(config["save_channels"]) > 10:
                 status_text += f'... и еще {len(config["save_channels"]) - 10} каналов\n'
+        
+        if not is_saved:
+            status_text += '\n⚠️ **Для включения сохранения в этом чате:**\n'
+            if is_private:
+                status_text += '• Используйте: `.saver private on`\n'
+            elif is_group:
+                status_text += '• Используйте: `.saver groups on`\n'
+            else:
+                status_text += '• Используйте: `.saver add`\n'
         
         msg = await event.respond(status_text)
         # Удаляем команду и ответ через 5 секунд
@@ -625,7 +659,13 @@ async def cache_message_handler(event):
         is_private = event.is_private
         is_group = event.is_group
         
-        if not should_save_message(chat_id, is_private, is_group):
+        should_save = should_save_message(chat_id, is_private, is_group)
+        
+        print(f'📨 Новое сообщение {message_id} в чате {chat_id}')
+        print(f'   Тип: {"личный" if is_private else "группа" if is_group else "канал"}')
+        print(f'   Сохранение: {"✅ ВКЛ" if should_save else "❌ ВЫКЛ"}')
+        
+        if not should_save:
             return
         
         # Получаем информацию о сообщении
