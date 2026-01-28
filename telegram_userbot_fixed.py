@@ -656,6 +656,48 @@ async def handle_saver_commands(event, message_text):
             pass
         return True
     
+    # Проверить удаленные сообщения прямо сейчас (принудительная проверка)
+    if message_text.lower() == '.saver check':
+        msg = await event.respond('🔍 Запуск проверки удаленных сообщений...')
+        
+        checked = 0
+        found = 0
+        
+        cache_for_chat = {k: v for k, v in messages_cache.items() if k.startswith(f'{chat_id}_')}
+        
+        for cache_key, message_data in cache_for_chat.items():
+            try:
+                message_id = message_data['message_id']
+                msg_obj = await client.get_messages(chat_id, ids=message_id)
+                checked += 1
+                
+                if msg_obj is None:
+                    # Сообщение удалено!
+                    message_data['deleted_at'] = datetime.now().isoformat()
+                    add_deleted_message(chat_id, message_data)
+                    del messages_cache[cache_key]
+                    found += 1
+                    print(f'💾 Найдено и сохранено удаленное: {message_id}')
+            
+            except Exception as e:
+                if 'MESSAGE_ID_INVALID' in str(e):
+                    message_data['deleted_at'] = datetime.now().isoformat()
+                    add_deleted_message(chat_id, message_data)
+                    del messages_cache[cache_key]
+                    found += 1
+        
+        await msg.edit(f'✅ Проверка завершена!\n\n'
+                      f'Проверено сообщений: {checked}\n'
+                      f'Найдено удаленных: {found}')
+        
+        await asyncio.sleep(5)
+        try:
+            await event.delete()
+            await msg.delete()
+        except:
+            pass
+        return True
+    
     # Помощь по командам
     if message_text.lower() == '.saver help':
         help_text = '''📚 **Команды управления сохранением удаленных сообщений:**
@@ -670,6 +712,7 @@ async def handle_saver_commands(event, message_text):
 **Просмотр:**
 • `.saver show` - показать последние 10 удаленных сообщений
 • `.saver cache` - показать кеш сообщений (для отладки)
+• `.saver check` - проверить удаленные прямо сейчас (вручную)
 • `.saver clear` - очистить сохраненные удаленные сообщения
 
 **Что сохраняется:**
@@ -683,6 +726,7 @@ async def handle_saver_commands(event, message_text):
 **Важно:**
 ⚠️ Сообщения сохраняются ТОЛЬКО после включения отслеживания!
 ⚠️ Ранее удаленные сообщения восстановить нельзя!
+⚠️ Используйте `.saver check` если `.saver show` не показывает удаленные
 
 _Команды видны только вам и автоматически удаляются._'''
         
@@ -795,6 +839,63 @@ async def deleted_message_handler(event):
         
     except Exception as e:
         print(f'⚠️ Ошибка обработки удаленного сообщения: {e}')
+
+
+# ============ ПЕРИОДИЧЕСКАЯ ПРОВЕРКА УДАЛЕННЫХ СООБЩЕНИЙ ============
+async def check_deleted_messages_periodically():
+    """Периодическая проверка на удаленные сообщения (для случаев когда событие не приходит)"""
+    while True:
+        try:
+            await asyncio.sleep(30)  # Проверяем каждые 30 секунд
+            
+            if not messages_cache:
+                continue
+            
+            print(f'🔍 Периодическая проверка кеша ({len(messages_cache)} сообщений)...')
+            
+            # Копируем ключи, чтобы безопасно изменять словарь
+            cache_keys = list(messages_cache.keys())
+            
+            for cache_key in cache_keys:
+                try:
+                    if cache_key not in messages_cache:
+                        continue
+                    
+                    message_data = messages_cache[cache_key]
+                    chat_id = message_data['chat_id']
+                    message_id = message_data['message_id']
+                    
+                    # Пытаемся получить сообщение из чата
+                    try:
+                        msg = await client.get_messages(chat_id, ids=message_id)
+                        
+                        # Если сообщение не найдено (None) - значит оно удалено
+                        if msg is None:
+                            print(f'🗑️ Обнаружено удаленное сообщение через проверку: {message_id} в чате {chat_id}')
+                            
+                            message_data['deleted_at'] = datetime.now().isoformat()
+                            add_deleted_message(chat_id, message_data)
+                            
+                            print(f'💾 Сохранено удаленное сообщение: {message_id} от {message_data["sender_name"]}')
+                            
+                            # Удаляем из кеша
+                            del messages_cache[cache_key]
+                    
+                    except Exception as e:
+                        # Если ошибка при получении - возможно сообщение удалено
+                        if 'MESSAGE_ID_INVALID' in str(e):
+                            print(f'🗑️ Сообщение {message_id} не найдено (удалено)')
+                            message_data['deleted_at'] = datetime.now().isoformat()
+                            add_deleted_message(chat_id, message_data)
+                            del messages_cache[cache_key]
+                
+                except Exception as e:
+                    print(f'⚠️ Ошибка проверки сообщения {cache_key}: {e}')
+                    continue
+            
+        except Exception as e:
+            print(f'⚠️ Ошибка периодической проверки: {e}')
+            await asyncio.sleep(60)  # При ошибке ждем дольше
 
 
 # ============ ОБРАБОТЧИК ВХОДЯЩИХ СООБЩЕНИЙ ОТ ДРУГИХ (для AI ответов) ============
@@ -974,6 +1075,10 @@ async def main():
         print('   .saver show - показать удаленные')
         print('\n⏹️ Для остановки нажмите Ctrl+C\n')
         print('🎧 Слушаю сообщения...\n')
+
+        # Запускаем фоновую задачу проверки удаленных сообщений
+        print('🔄 Запуск фоновой проверки удаленных сообщений...')
+        asyncio.create_task(check_deleted_messages_periodically())
 
         await client.run_until_disconnected()
 
