@@ -561,8 +561,20 @@ async def handle_saver_commands(event, message_text):
         deleted_msgs = get_deleted_messages(chat_id, limit=10)
         
         if not deleted_msgs:
-            msg = await event.respond('📭 Нет сохраненных удаленных сообщений в этом чате.')
-            await asyncio.sleep(3)
+            # Показываем дополнительную информацию для диагностики
+            cache_count = len([k for k in messages_cache.keys() if k.startswith(f'{chat_id}_')])
+            msg = await event.respond(
+                f'📭 Нет сохраненных удаленных сообщений в этом чате.\n\n'
+                f'🔍 **Диагностика:**\n'
+                f'• ID чата: `{chat_id}`\n'
+                f'• Сообщений в кеше: {cache_count}\n'
+                f'• Всего в кеше: {len(messages_cache)}\n\n'
+                f'💡 Убедитесь что:\n'
+                f'1. Сохранение включено (`.saver status`)\n'
+                f'2. Сообщение было удалено ПОСЛЕ включения\n'
+                f'3. Бот был запущен когда удалили сообщение'
+            )
+            await asyncio.sleep(8)
             try:
                 await event.delete()
                 await msg.delete()
@@ -610,6 +622,40 @@ async def handle_saver_commands(event, message_text):
             pass
         return True
     
+    # Показать содержимое кеша (для отладки)
+    if message_text.lower() == '.saver cache':
+        cache_for_chat = {k: v for k, v in messages_cache.items() if k.startswith(f'{chat_id}_')}
+        
+        if not cache_for_chat:
+            msg = await event.respond(
+                f'📦 Кеш для этого чата пуст\n\n'
+                f'Всего сообщений в кеше: {len(messages_cache)}\n\n'
+                f'💡 Кеш заполняется когда:\n'
+                f'• Сохранение включено\n'
+                f'• Приходят новые сообщения\n'
+                f'• Бот работает'
+            )
+        else:
+            response = f'📦 **Кеш для чата {chat_id}:**\n\n'
+            for key, data in list(cache_for_chat.items())[:5]:
+                msg_id = data.get('message_id', 'н/д')
+                sender = data.get('sender_name', 'Неизвестно')
+                text = data.get('text', '')[:50]
+                response += f'• MSG {msg_id}: {sender}\n  "{text}..."\n\n'
+            
+            if len(cache_for_chat) > 5:
+                response += f'... и еще {len(cache_for_chat) - 5} сообщений'
+            
+            msg = await event.respond(response)
+        
+        await asyncio.sleep(8)
+        try:
+            await event.delete()
+            await msg.delete()
+        except:
+            pass
+        return True
+    
     # Помощь по командам
     if message_text.lower() == '.saver help':
         help_text = '''📚 **Команды управления сохранением удаленных сообщений:**
@@ -623,6 +669,7 @@ async def handle_saver_commands(event, message_text):
 
 **Просмотр:**
 • `.saver show` - показать последние 10 удаленных сообщений
+• `.saver cache` - показать кеш сообщений (для отладки)
 • `.saver clear` - очистить сохраненные удаленные сообщения
 
 **Что сохраняется:**
@@ -632,6 +679,10 @@ async def handle_saver_commands(event, message_text):
 ✅ Скоротечные фото (TTL)
 ✅ Информация об отправителе
 ✅ Время удаления
+
+**Важно:**
+⚠️ Сообщения сохраняются ТОЛЬКО после включения отслеживания!
+⚠️ Ранее удаленные сообщения восстановить нельзя!
 
 _Команды видны только вам и автоматически удаляются._'''
         
@@ -698,15 +749,23 @@ async def cache_message_handler(event):
         cache_key = f'{chat_id}_{message_id}'
         messages_cache[cache_key] = message_data
         
+        print(f'✅ Сообщение добавлено в кеш: {cache_key}')
+        print(f'   От: {sender_name}')
+        print(f'   Текст: {message_data["text"][:50]}...')
+        print(f'   Всего в кеше: {len(messages_cache)} сообщений')
+        
         # Ограничиваем размер кеша
         if len(messages_cache) > 1000:
             # Удаляем старые записи
             old_keys = list(messages_cache.keys())[:500]
             for key in old_keys:
                 del messages_cache[key]
+            print(f'🧹 Очистка кеша: удалено {len(old_keys)} старых записей')
         
     except Exception as e:
         print(f'⚠️ Ошибка кеширования сообщения: {e}')
+        import traceback
+        traceback.print_exc()
 
 
 # ============ ОБРАБОТЧИК УДАЛЕННЫХ СООБЩЕНИЙ ============
