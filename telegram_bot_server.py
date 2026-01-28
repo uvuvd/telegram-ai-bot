@@ -21,7 +21,7 @@ OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
 OPENROUTER_API_KEY = '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'
 MODEL_NAME = 'google/gemini-3-flash-preview'
 
-# Команда активации
+# Команда активации AI
 ACTIVATION_COMMAND = 'Ai Edem'
 
 # Файлы базы данных
@@ -35,6 +35,9 @@ SESSION_NAME = 'railway_session'
 
 # Папка для сохранения медиафайлов
 MEDIA_FOLDER = 'saved_media'
+
+# ID владельца аккаунта (будет установлен при запуске)
+OWNER_ID = None
 
 
 # ============ РАБОТА С БАЗОЙ ДАННЫХ ============
@@ -392,13 +395,18 @@ def clear_chat_history(chat_id):
 client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
 
-# ============ ОБРАБОТЧИКИ КОМАНД УПРАВЛЕНИЯ СОХРАНЕНИЕМ ============
+# ============ ОБРАБОТЧИКИ КОМАНД УПРАВЛЕНИЯ СОХРАНЕНИЕМ (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА) ============
 async def handle_saver_commands(event, message_text):
-    """Обработка команд управления сохранением удаленных сообщений"""
+    """Обработка команд управления сохранением удаленных сообщений (только для владельца)"""
+    
+    # КРИТИЧНО: Проверка, что команду отправил владелец аккаунта
+    if event.sender_id != OWNER_ID:
+        return False
+    
     chat_id = event.chat_id
     
     # Показать статус сохранения
-    if message_text.lower() == 'ai saver status':
+    if message_text.lower() == '.saver status':
         config = load_saver_config()
         status_text = '📊 **Статус сохранения удаленных сообщений:**\n\n'
         status_text += f'💬 Личные сообщения: {"✅ Включено" if config["save_private"] else "❌ Выключено"}\n'
@@ -414,118 +422,178 @@ async def handle_saver_commands(event, message_text):
             if len(config["save_channels"]) > 10:
                 status_text += f'... и еще {len(config["save_channels"]) - 10} каналов\n'
         
-        await event.respond(status_text)
+        msg = await event.respond(status_text)
+        # Удаляем команду и ответ через 5 секунд
+        await asyncio.sleep(5)
+        try:
+            await event.delete()
+            await msg.delete()
+        except:
+            pass
         return True
     
     # Включить сохранение личных сообщений
-    if message_text.lower() == 'ai saver private on':
+    if message_text.lower() == '.saver private on':
         config = load_saver_config()
         config['save_private'] = True
         save_saver_config(config)
-        await event.respond('✅ Сохранение удаленных сообщений из **личных чатов** включено!')
+        msg = await event.respond('✅ Сохранение удаленных сообщений из **личных чатов** включено!')
+        await asyncio.sleep(3)
+        try:
+            await event.delete()
+            await msg.delete()
+        except:
+            pass
         return True
     
     # Выключить сохранение личных сообщений
-    if message_text.lower() == 'ai saver private off':
+    if message_text.lower() == '.saver private off':
         config = load_saver_config()
         config['save_private'] = False
         save_saver_config(config)
-        await event.respond('❌ Сохранение удаленных сообщений из **личных чатов** выключено!')
+        msg = await event.respond('❌ Сохранение удаленных сообщений из **личных чатов** выключено!')
+        await asyncio.sleep(3)
+        try:
+            await event.delete()
+            await msg.delete()
+        except:
+            pass
         return True
     
     # Включить сохранение групп
-    if message_text.lower() == 'ai saver groups on':
+    if message_text.lower() == '.saver groups on':
         config = load_saver_config()
         config['save_groups'] = True
         save_saver_config(config)
-        await event.respond('✅ Сохранение удаленных сообщений из **групп** включено!')
+        msg = await event.respond('✅ Сохранение удаленных сообщений из **групп** включено!')
+        await asyncio.sleep(3)
+        try:
+            await event.delete()
+            await msg.delete()
+        except:
+            pass
         return True
     
     # Выключить сохранение групп
-    if message_text.lower() == 'ai saver groups off':
+    if message_text.lower() == '.saver groups off':
         config = load_saver_config()
         config['save_groups'] = False
         save_saver_config(config)
-        await event.respond('❌ Сохранение удаленных сообщений из **групп** выключено!')
+        msg = await event.respond('❌ Сохранение удаленных сообщений из **групп** выключено!')
+        await asyncio.sleep(3)
+        try:
+            await event.delete()
+            await msg.delete()
+        except:
+            pass
         return True
     
     # Добавить канал для отслеживания
-    if message_text.lower().startswith('ai saver add'):
-        # Можно добавить текущий чат или указать ID
+    if message_text.lower().startswith('.saver add'):
         config = load_saver_config()
         chat_id_str = str(chat_id)
         
         if chat_id_str not in config['save_channels']:
             config['save_channels'].append(chat_id_str)
             save_saver_config(config)
-            await event.respond(f'✅ Канал/чат (ID: {chat_id}) добавлен в список отслеживания!')
+            msg = await event.respond(f'✅ Канал/чат (ID: {chat_id}) добавлен в список отслеживания!')
         else:
-            await event.respond(f'⚠️ Этот канал/чат уже в списке отслеживания!')
+            msg = await event.respond(f'⚠️ Этот канал/чат уже в списке отслеживания!')
+        await asyncio.sleep(3)
+        try:
+            await event.delete()
+            await msg.delete()
+        except:
+            pass
         return True
     
     # Удалить канал из отслеживания
-    if message_text.lower().startswith('ai saver remove'):
+    if message_text.lower().startswith('.saver remove'):
         config = load_saver_config()
         chat_id_str = str(chat_id)
         
         if chat_id_str in config['save_channels']:
             config['save_channels'].remove(chat_id_str)
             save_saver_config(config)
-            await event.respond(f'❌ Канал/чат (ID: {chat_id}) удален из списка отслеживания!')
+            msg = await event.respond(f'❌ Канал/чат (ID: {chat_id}) удален из списка отслеживания!')
         else:
-            await event.respond(f'⚠️ Этот канал/чат не был в списке отслеживания!')
+            msg = await event.respond(f'⚠️ Этот канал/чат не был в списке отслеживания!')
+        await asyncio.sleep(3)
+        try:
+            await event.delete()
+            await msg.delete()
+        except:
+            pass
         return True
     
     # Показать удаленные сообщения
-    if message_text.lower() == 'ai saver show':
+    if message_text.lower() == '.saver show':
         deleted_msgs = get_deleted_messages(chat_id, limit=10)
         
         if not deleted_msgs:
-            await event.respond('📭 Нет сохраненных удаленных сообщений в этом чате.')
+            msg = await event.respond('📭 Нет сохраненных удаленных сообщений в этом чате.')
+            await asyncio.sleep(3)
+            try:
+                await event.delete()
+                await msg.delete()
+            except:
+                pass
             return True
         
         response = f'🗑️ **Последние {len(deleted_msgs)} удаленных сообщений:**\n\n'
         
-        for i, msg in enumerate(deleted_msgs[-10:], 1):
-            timestamp = msg.get('deleted_at', 'н/д')
-            sender = msg.get('sender_name', 'Неизвестно')
-            text = msg.get('text', '[медиафайл]')[:100]
+        for i, msg_data in enumerate(deleted_msgs[-10:], 1):
+            timestamp = msg_data.get('deleted_at', 'н/д')
+            sender = msg_data.get('sender_name', 'Неизвестно')
+            text = msg_data.get('text', '[медиафайл]')[:100]
             media_info = ''
             
-            if msg.get('has_photo'):
+            if msg_data.get('has_photo'):
                 media_info += '📷 '
-            if msg.get('has_video'):
+            if msg_data.get('has_video'):
                 media_info += '🎥 '
-            if msg.get('has_document'):
+            if msg_data.get('has_document'):
                 media_info += '📎 '
-            if msg.get('is_ttl'):
+            if msg_data.get('is_ttl'):
                 media_info += '⏱️ '
             
             response += f'{i}. [{timestamp}] **{sender}**: {media_info}{text}\n\n'
         
-        await event.respond(response)
+        msg = await event.respond(response)
+        await asyncio.sleep(10)
+        try:
+            await event.delete()
+            await msg.delete()
+        except:
+            pass
         return True
     
     # Очистить сохраненные удаленные сообщения
-    if message_text.lower() == 'ai saver clear':
+    if message_text.lower() == '.saver clear':
         clear_deleted_messages(chat_id)
-        await event.respond('🗑️ Все сохраненные удаленные сообщения из этого чата очищены!')
+        msg = await event.respond('🗑️ Все сохраненные удаленные сообщения из этого чата очищены!')
+        await asyncio.sleep(3)
+        try:
+            await event.delete()
+            await msg.delete()
+        except:
+            pass
         return True
     
     # Помощь по командам
-    if message_text.lower() == 'ai saver help':
+    if message_text.lower() == '.saver help':
         help_text = '''📚 **Команды управления сохранением удаленных сообщений:**
 
 **Управление:**
-• `Ai Saver Status` - показать текущий статус
-• `Ai Saver Private On/Off` - вкл/выкл личные чаты
-• `Ai Saver Groups On/Off` - вкл/выкл группы
-• `Ai Saver Add` - добавить текущий чат в отслеживание
-• `Ai Saver Remove` - удалить текущий чат из отслеживания
+• `.saver status` - показать текущий статус
+• `.saver private on/off` - вкл/выкл личные чаты
+• `.saver groups on/off` - вкл/выкл группы
+• `.saver add` - добавить текущий чат в отслеживание
+• `.saver remove` - удалить текущий чат из отслеживания
 
 **Просмотр:**
-• `Ai Saver Show` - показать последние 10 удаленных сообщений
-• `Ai Saver Clear` - очистить сохраненные удаленные сообщения
+• `.saver show` - показать последние 10 удаленных сообщений
+• `.saver clear` - очистить сохраненные удаленные сообщения
 
 **Что сохраняется:**
 ✅ Текст сообщений
@@ -533,9 +601,17 @@ async def handle_saver_commands(event, message_text):
 ✅ Документы и файлы
 ✅ Скоротечные фото (TTL)
 ✅ Информация об отправителе
-✅ Время удаления'''
+✅ Время удаления
+
+_Команды видны только вам и автоматически удаляются._'''
         
-        await event.respond(help_text)
+        msg = await event.respond(help_text)
+        await asyncio.sleep(15)
+        try:
+            await event.delete()
+            await msg.delete()
+        except:
+            pass
         return True
     
     return False
@@ -626,40 +702,36 @@ async def deleted_message_handler(event):
         print(f'⚠️ Ошибка обработки удаленного сообщения: {e}')
 
 
-# ============ ОБРАБОТЧИК ВХОДЯЩИХ СООБЩЕНИЙ ============
+# ============ ОБРАБОТЧИК ВХОДЯЩИХ СООБЩЕНИЙ (AI) ============
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
-    """Основной обработчик входящих сообщений"""
+    """Основной обработчик входящих сообщений (AI)"""
     try:
+        # Пропускаем свои сообщения
         if event.out:
             return
 
         chat_id = event.chat_id
         message_text = event.message.message or ''
 
-        print(f'📨 Получено сообщение в чате {chat_id}: {message_text[:50]}...')
-
-        # Проверка команд управления сохранением
-        if message_text.lower().startswith('ai saver'):
+        # КРИТИЧНО: Проверка команд управления сохранением (только для владельца)
+        if message_text.lower().startswith('.saver'):
             handled = await handle_saver_commands(event, message_text)
             if handled:
                 return
 
+        # AI команды доступны всем (как и раньше)
         if ACTIVATION_COMMAND.lower() in message_text.lower():
             activate_chat(chat_id)
-            await event.respond(f'✅ Бот активирован! Теперь я буду отвечать на все сообщения в этом чате.\n\n'
-                                f'**Команды AI:**\n'
-                                f'• "Ai Stop" - деактивировать бота\n'
-                                f'• "Ai Clear" - очистить историю чата\n\n'
-                                f'**Команды сохранения удаленных сообщений:**\n'
-                                f'• "Ai Saver Help" - помощь по командам\n'
-                                f'• "Ai Saver Status" - статус сохранения\n'
-                                f'• "Ai Saver Show" - показать удаленные сообщения')
+            await event.respond(f'✅ AI-ассистент активирован! Теперь я буду отвечать на все сообщения в этом чате.\n\n'
+                                f'**Команды:**\n'
+                                f'• "Ai Stop" - деактивировать ассистента\n'
+                                f'• "Ai Clear" - очистить историю диалога')
             return
 
         if 'ai stop' in message_text.lower():
             deactivate_chat(chat_id)
-            await event.respond('❌ Бот деактивирован. Напишите "Ai Edem" для повторной активации.')
+            await event.respond('❌ AI-ассистент деактивирован. Напишите "Ai Edem" для повторной активации.')
             return
 
         if 'ai clear' in message_text.lower():
@@ -669,9 +741,9 @@ async def handler(event):
             return
 
         if not is_chat_active(chat_id):
-            print(f'⏭️ Чат {chat_id} не активен, пропускаем')
             return
 
+        # Обработка медиа
         if event.message.voice:
             try:
                 voice_file = await event.message.download_media(bytes)
@@ -714,10 +786,9 @@ async def handler(event):
 
         messages_for_api = [system_message] + history
 
-        print(f'🤖 Запрос к AI с {len(history)} сообщениями в истории (с reasoning)')
+        print(f'🤖 Запрос к AI с {len(history)} сообщениями в истории')
         response = await get_ai_response(messages_for_api)
 
-        # response теперь словарь с content и reasoning_details
         content = response.get('content', 'Не смог сформировать ответ')
         reasoning_details = response.get('reasoning_details')
 
@@ -727,8 +798,6 @@ async def handler(event):
         try:
             await event.respond(content)
             print(f'✅ Отправлен ответ в чат {chat_id}: {content[:50]}...')
-            if reasoning_details:
-                print(f'🧠 Reasoning сохранён для контекста')
 
         except RPCError as e:
             if 'TOPIC_CLOSED' in str(e) or 'CHAT_WRITE_FORBIDDEN' in str(e):
@@ -748,8 +817,10 @@ async def handler(event):
 
 # ============ ГЛАВНАЯ ФУНКЦИЯ ============
 async def main():
-    """Запуск бота"""
-    print('🚀 Запуск Telegram бота с AI (Gemini + Reasoning) + Сохранение удаленных сообщений...')
+    """Запуск userbot"""
+    global OWNER_ID
+    
+    print('🚀 Запуск Telegram Userbot с AI + Сохранение удаленных сообщений...')
     print(f'📁 Рабочая директория: {os.getcwd()}')
     print(f'📝 Используется сессия: {SESSION_NAME}.session')
     print(f'💾 Папка для медиа: {MEDIA_FOLDER}')
@@ -757,48 +828,44 @@ async def main():
     # Создаем папку для медиа
     Path(MEDIA_FOLDER).mkdir(parents=True, exist_ok=True)
 
-    # КРИТИЧЕСКИ ВАЖНО: Проверка наличия файла сессии
+    # Проверка наличия файла сессии
     session_file = f'{SESSION_NAME}.session'
     if not os.path.exists(session_file):
         print(f'\n❌ ОШИБКА: Файл сессии "{session_file}" не найден!')
         print(f'\n📋 Инструкция по созданию сессии:')
-        print(f'1. Запустите локально на своём компьютере: python create_session.py')
+        print(f'1. Запустите локально: python create_session.py')
         print(f'2. Введите код из Telegram')
-        print(f'3. Загрузите созданный файл "{session_file}" в GitHub репозиторий')
-        print(f'4. Railway автоматически перезапустит бота\n')
+        print(f'3. Загрузите созданный файл "{session_file}" в репозиторий\n')
         sys.exit(1)
 
     try:
         await client.connect()
         print('✅ Подключение к Telegram установлено')
 
-        # Проверка авторизации
         if not await client.is_user_authorized():
             print('\n❌ ОШИБКА: Сессия не авторизована!')
-            print('\n📋 Файл сессии существует, но не содержит авторизации.')
-            print('Это означает, что файл создан неправильно или повреждён.\n')
-            print('Решение:')
-            print('1. Удалите файл railway_session.session с Railway/GitHub')
-            print('2. Запустите локально: python create_session.py')
-            print('3. Дождитесь успешной авторизации')
-            print('4. Загрузите новый файл в GitHub\n')
             sys.exit(1)
 
-        print('✅ Бот успешно запущен!')
+        print('✅ Userbot успешно запущен!')
         me = await client.get_me()
-        print(f'👤 Аккаунт: {me.username or me.first_name}')
-        print(f'🤖 Модель: {MODEL_NAME} (с reasoning)')
-        print(f'🔑 Команда активации: "{ACTIVATION_COMMAND}"')
-        print(f'💾 Функция сохранения удаленных сообщений: АКТИВНА')
+        OWNER_ID = me.id  # Сохраняем ID владельца
+        
+        print(f'👤 Аккаунт: {me.username or me.first_name} (ID: {OWNER_ID})')
+        print(f'🤖 AI Модель: {MODEL_NAME}')
+        print(f'🔑 Команда активации AI: "{ACTIVATION_COMMAND}"')
+        print(f'💾 Функция сохранения удаленных: АКТИВНА')
         
         config = load_saver_config()
         print(f'📊 Сохранение личных: {config["save_private"]}')
         print(f'📊 Сохранение групп: {config["save_groups"]}')
         print(f'📊 Отслеживаемых каналов: {len(config["save_channels"])}')
         
-        print('\n📝 Для активации бота в чате напишите: Ai Edem')
-        print('📝 Для управления сохранением напишите: Ai Saver Help')
-        print('⏹️ Для остановки нажмите Ctrl+C\n')
+        print('\n📝 Команды управления сохранением (только для вас, автоудаляются):')
+        print('   .saver help - справка')
+        print('   .saver status - статус')
+        print('   .saver add - добавить чат')
+        print('   .saver show - показать удаленные')
+        print('\n⏹️ Для остановки нажмите Ctrl+C\n')
         print('🎧 Слушаю сообщения...\n')
 
         await client.run_until_disconnected()
@@ -815,7 +882,7 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print('\n👋 Бот остановлен пользователем')
+        print('\n👋 Userbot остановлен')
     except Exception as e:
         print(f'\n❌ Критическая ошибка: {type(e).__name__}: {e}')
         import traceback
