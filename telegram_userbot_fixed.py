@@ -141,15 +141,20 @@ def store_message_immediately(chat_id, message_data):
     
     if chat_key not in storage:
         storage[chat_key] = []
+        print(f'   📁 Создана новая запись для чата {chat_key}')
     
     storage[chat_key].append(message_data)
     
     # Ограничение: храним последние 1000 сообщений на чат
     if len(storage[chat_key]) > 1000:
+        removed = len(storage[chat_key]) - 1000
         storage[chat_key] = storage[chat_key][-1000:]
+        print(f'   🧹 Удалено {removed} старых сообщений (лимит 1000)')
     
     save_messages_storage(storage)
-    print(f'💾 Сообщение {message_data["message_id"]} сохранено в хранилище')
+    print(f'   💾 Сообщение {message_data["message_id"]} сохранено в storage (всего в чате: {len(storage[chat_key])})')
+    
+    return True
 
 
 def get_stored_message(chat_id, message_id):
@@ -158,12 +163,15 @@ def get_stored_message(chat_id, message_id):
     chat_key = str(chat_id)
     
     if chat_key not in storage:
+        print(f'   ⚠️ Чат {chat_key} не найден в storage')
         return None
     
     for msg in storage[chat_key]:
         if msg.get('message_id') == message_id:
+            print(f'   ✅ Сообщение {message_id} найдено в storage')
             return msg
     
+    print(f'   ⚠️ Сообщение {message_id} НЕ найдено в storage (всего сообщений в чате: {len(storage[chat_key])})')
     return None
 
 
@@ -850,6 +858,47 @@ async def handle_saver_commands(event, message_text):
             print(f'⚠️ Ошибка .saver clean: {e}')
         return True
     
+    # НОВОЕ: Диагностика storage
+    if message_text.lower() == '.saver debug':
+        storage = load_messages_storage()
+        chat_key = str(chat_id)
+        
+        debug_text = '🔍 **ДИАГНОСТИКА STORAGE:**\n\n'
+        
+        if chat_key in storage and storage[chat_key]:
+            messages_count = len(storage[chat_key])
+            debug_text += f'📦 Сообщений в storage для этого чата: **{messages_count}**\n\n'
+            debug_text += f'🕐 Последние 5 сообщений:\n'
+            
+            for i, msg in enumerate(storage[chat_key][-5:], 1):
+                sender = msg.get('sender_name', 'н/д')
+                text = msg.get('text', '')[:40]
+                msg_id = msg.get('message_id', 'н/д')
+                debug_text += f'{i}. MSG {msg_id} от {sender}\n   "{text}"\n'
+        else:
+            debug_text += f'❌ Нет сообщений в storage для чата {chat_id}\n\n'
+            debug_text += f'💡 Это может быть потому что:\n'
+            debug_text += f'• Сохранение не включено\n'
+            debug_text += f'• Еще не было входящих сообщений\n'
+            debug_text += f'• OWNER_ID = {OWNER_ID}\n'
+        
+        # Проверяем конфиг
+        config = load_saver_config()
+        is_private = event.is_private
+        is_group = event.is_group
+        should_save = should_save_message(chat_id, is_private, is_group)
+        
+        debug_text += f'\n⚙️ **Настройки:**\n'
+        debug_text += f'• Этот чат: {"✅ Сохранение ВКЛ" if should_save else "❌ Сохранение ВЫКЛ"}\n'
+        debug_text += f'• Личные чаты: {"✅" if config["save_private"] else "❌"}\n'
+        debug_text += f'• Группы: {"✅" if config["save_groups"] else "❌"}\n'
+        debug_text += f'• Тип чата: {"личный" if is_private else "группа" if is_group else "канал"}\n'
+        
+        msg = await event.respond(debug_text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
     # Помощь по командам
     if message_text.lower() == '.saver help':
         help_text = '''📚 **Команды управления сохранением:**
@@ -868,6 +917,7 @@ async def handle_saver_commands(event, message_text):
 • `.saver media N` - отправить медиа в Избранное
 • `.saver clear` - очистить удаленные
 • `.saver clean` - удалить все менюшки команд
+• `.saver debug` - диагностика storage (отладка)
 
 **Что сохраняется:**
 ✅ Текст сообщений
@@ -880,6 +930,7 @@ async def handle_saver_commands(event, message_text):
 🔥 Команды удаляются автоматически при вводе новой
 🔥 Медиа доступно в Избранном
 🔥 Команды НЕ показываются в истории удаленных
+🔍 Используйте .saver debug если что-то не работает
 
 _Команды автоматически удаляются._'''
         
@@ -892,12 +943,17 @@ _Команды автоматически удаляются._'''
 
 
 # ============ ОБРАБОТЧИК НОВЫХ СООБЩЕНИЙ (НЕМЕДЛЕННОЕ сохранение) ============
-@client.on(events.NewMessage)
+@client.on(events.NewMessage(incoming=True, from_users=None))
 async def immediate_save_handler(event):
-    """НЕМЕДЛЕННОЕ сохранение всех сообщений в постоянное хранилище"""
+    """НЕМЕДЛЕННОЕ сохранение ВХОДЯЩИХ сообщений в постоянное хранилище"""
     try:
         chat_id = event.chat_id
         message_id = event.message.id
+        
+        # ВАЖНО: Пропускаем свои сообщения
+        if event.sender_id == OWNER_ID:
+            print(f'⏭️ Пропускаем свое сообщение {message_id}')
+            return
         
         # Проверяем, нужно ли сохранять
         is_private = event.is_private
@@ -905,7 +961,12 @@ async def immediate_save_handler(event):
         
         should_save = should_save_message(chat_id, is_private, is_group)
         
+        print(f'📨 Новое ВХОДЯЩЕЕ сообщение {message_id} в чате {chat_id}')
+        print(f'   От: {event.sender_id}')
+        print(f'   Сохранение: {"✅" if should_save else "❌"}')
+        
         if not should_save:
+            print(f'   ⏭️ Сохранение выключено для этого чата')
             return
         
         # Получаем информацию о сообщении
@@ -915,6 +976,9 @@ async def immediate_save_handler(event):
             sender_name += f' (@{sender.username})'
         
         message_text = event.message.message or ''
+        
+        print(f'   Отправитель: {sender_name}')
+        print(f'   Текст: {message_text[:50]}...')
         
         message_data = {
             'chat_id': chat_id,
@@ -930,19 +994,24 @@ async def immediate_save_handler(event):
             'media_path': None
         }
         
+        print(f'   Медиа: Фото={message_data["has_photo"]}, Видео={message_data["has_video"]}, Док={message_data["has_document"]}, TTL={message_data["is_ttl"]}')
+        
         # Сохраняем медиафайлы
         config = load_saver_config()
         if config['save_media'] and (event.message.photo or event.message.video or event.message.document):
+            print(f'   💾 Начинаем сохранение медиа...')
             media_path = await save_media_file(event.message)
             message_data['media_path'] = media_path
+            print(f'   ✅ Медиа сохранено: {media_path}')
         
         # НЕМЕДЛЕННО сохраняем в постоянное хранилище
         store_message_immediately(chat_id, message_data)
         
-        print(f'⚡ Сообщение {message_id} НЕМЕДЛЕННО сохранено')
+        print(f'   ✅ Сообщение {message_id} НЕМЕДЛЕННО сохранено в storage!')
+        print(f'   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
         
     except Exception as e:
-        print(f'⚠️ Ошибка немедленного сохранения: {e}')
+        print(f'❌ ОШИБКА немедленного сохранения: {e}')
         import traceback
         traceback.print_exc()
 
@@ -955,27 +1024,49 @@ async def deleted_message_handler(event):
         chat_id = event.chat_id
         deleted_ids = event.deleted_ids
         
-        print(f'🗑️ Обнаружено удаление {len(deleted_ids)} сообщений в чате {chat_id}')
+        print(f'\n🗑️ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+        print(f'🗑️ ОБНАРУЖЕНО УДАЛЕНИЕ в чате {chat_id}')
+        print(f'🗑️ Количество удаленных ID: {len(deleted_ids)}')
+        print(f'🗑️ ID: {deleted_ids}')
+        
+        saved_count = 0
+        not_found_count = 0
         
         for message_id in deleted_ids:
             # Получаем сообщение из постоянного хранилища
             message_data = get_stored_message(chat_id, message_id)
             
             if message_data:
+                print(f'   ✅ Найдено в storage: {message_id}')
+                print(f'      От: {message_data.get("sender_name")}')
+                print(f'      Текст: {message_data.get("text", "")[:50]}')
+                
                 message_data['deleted_at'] = datetime.now().isoformat()
                 
                 # Сохраняем в базу удаленных (фильтр команд внутри функции)
                 add_deleted_message(chat_id, message_data)
+                saved_count += 1
                 
                 # Если есть медиа - отправляем в Избранное
                 if message_data.get('media_path') and os.path.exists(message_data.get('media_path')):
                     caption = message_data.get('text', '')
-                    await send_to_saved_messages(message_data['media_path'], caption, message_data)
+                    print(f'      📤 Отправка медиа в Избранное...')
+                    success = await send_to_saved_messages(message_data['media_path'], caption, message_data)
+                    if success:
+                        print(f'      ✅ Медиа отправлено в Избранное!')
+                    else:
+                        print(f'      ❌ Ошибка отправки медиа')
                 
-                print(f'💾 Обработано удаленное: {message_id} от {message_data["sender_name"]}')
+                print(f'   💾 Удаленное сообщение сохранено в БД')
+            else:
+                print(f'   ❌ НЕ НАЙДЕНО в storage: {message_id}')
+                not_found_count += 1
+        
+        print(f'🗑️ ИТОГО: Сохранено={saved_count}, Не найдено={not_found_count}')
+        print(f'🗑️ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
         
     except Exception as e:
-        print(f'⚠️ Ошибка обработки удаленного: {e}')
+        print(f'❌ КРИТИЧЕСКАЯ ОШИБКА обработки удаленного: {e}')
         import traceback
         traceback.print_exc()
 
