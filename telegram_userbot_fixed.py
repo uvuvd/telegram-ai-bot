@@ -2,6 +2,8 @@ import asyncio
 import json
 import os
 import sys
+import random
+import string
 from datetime import datetime
 from pathlib import Path
 
@@ -30,6 +32,7 @@ ACTIVE_CHATS_FILE = 'active_chats.json'
 DELETED_MESSAGES_DB = 'deleted_messages.json'
 SAVER_CONFIG_FILE = 'saver_config.json'
 MESSAGES_STORAGE_DB = 'messages_storage.json'  # НОВАЯ БД для всех сообщений
+ANIMATION_CONFIG_FILE = 'animation_config.json'  # НОВАЯ: Конфигурация анимаций
 
 # Имя сессии для Railway (отдельная сессия!)
 SESSION_NAME = 'railway_session'
@@ -67,6 +70,203 @@ def save_db(data):
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f'⚠️ Ошибка сохранения БД: {e}')
+
+
+# ============ РАБОТА С АНИМАЦИЯМИ ============
+def load_animation_config():
+    """Загрузка конфигурации анимаций"""
+    if os.path.exists(ANIMATION_CONFIG_FILE):
+        try:
+            with open(ANIMATION_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f'⚠️ Ошибка загрузки конфигурации анимаций: {e}')
+            return {}
+    return {}
+
+
+def save_animation_config(config):
+    """Сохранение конфигурации анимаций"""
+    try:
+        with open(ANIMATION_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f'⚠️ Ошибка сохранения конфигурации анимаций: {e}')
+
+
+def get_animation_mode(chat_id):
+    """Получить режим анимации для чата"""
+    config = load_animation_config()
+    chat_key = str(chat_id)
+    return config.get(chat_key, {}).get('mode', None)
+
+
+def set_animation_mode(chat_id, mode):
+    """Установить режим анимации для чата (typewriter/glitch/matrix или None)"""
+    config = load_animation_config()
+    chat_key = str(chat_id)
+    
+    if chat_key not in config:
+        config[chat_key] = {}
+    
+    config[chat_key]['mode'] = mode
+    save_animation_config(config)
+    print(f'🎬 Режим анимации для чата {chat_id}: {mode}')
+
+
+# ============ АНИМАЦИОННЫЕ ФУНКЦИИ ============
+async def animate_typewriter(message_obj, text, duration=40, interval=0.5):
+    """
+    Анимация печатной машинки
+    Текст печатается посимвольно с курсором █
+    """
+    frames_count = int(duration / interval)
+    chars_per_frame = max(1, len(text) // frames_count)
+    
+    emojis = ['💬', '✍️', '📝', '⌨️']
+    
+    for i in range(0, len(text) + 1, chars_per_frame):
+        if i >= len(text):
+            current_text = text
+        else:
+            current_text = text[:i] + '█'
+        
+        # Добавляем emoji в начале
+        emoji = random.choice(emojis)
+        frame_text = f'{emoji} {current_text}'
+        
+        try:
+            await message_obj.edit(frame_text)
+            await asyncio.sleep(interval)
+        except Exception as e:
+            print(f'⚠️ Ошибка анимации: {e}')
+            break
+    
+    # Финальный текст без курсора
+    try:
+        await message_obj.edit(f'✅ {text}')
+    except:
+        pass
+
+
+async def animate_glitch(message_obj, text, duration=40, interval=0.5):
+    """
+    Анимация глитча
+    Случайные символы постепенно превращаются в правильный текст
+    """
+    glitch_chars = '₽₩€∑∏π∫ªº∆©®™℅℉№⁂※‽⁇⁈⁉‼‰‱⁀⁁⁂'
+    frames_count = int(duration / interval)
+    
+    # Создаем промежуточные кадры
+    current = list('?' * len(text))
+    
+    for frame in range(frames_count):
+        # Постепенно заменяем символы на правильные
+        chars_to_reveal = max(1, len(text) // (frames_count - frame) if frame < frames_count - 1 else len(text))
+        
+        for _ in range(chars_to_reveal):
+            wrong_indices = [i for i, c in enumerate(current) if c != text[i] and text[i] != ' ']
+            if wrong_indices:
+                idx = random.choice(wrong_indices)
+                
+                # 30% шанс поставить правильный символ
+                if random.random() < 0.3 or frame > frames_count * 0.8:
+                    current[idx] = text[idx]
+                else:
+                    # Остальное время - глитч символы
+                    current[idx] = random.choice(glitch_chars)
+        
+        # Пробелы всегда правильные
+        for i, char in enumerate(text):
+            if char == ' ':
+                current[i] = ' '
+        
+        # Добавляем прогресс-бар
+        progress = int((frame / frames_count) * 10)
+        progress_bar = '█' * progress + '░' * (10 - progress)
+        
+        frame_text = f'⚡ {"".join(current)}\n[{progress_bar}] {int((frame / frames_count) * 100)}%'
+        
+        try:
+            await message_obj.edit(frame_text)
+            await asyncio.sleep(interval)
+        except Exception as e:
+            print(f'⚠️ Ошибка анимации: {e}')
+            break
+    
+    # Финальный текст
+    try:
+        await message_obj.edit(f'✨ {text}')
+    except:
+        pass
+
+
+async def animate_matrix(message_obj, text, duration=40, interval=0.5):
+    """
+    Анимация матрицы
+    Символы проявляются через блоки как в фильме Матрица
+    """
+    blocks = ['█', '▓', '▒', '░', '']
+    frames_count = int(duration / interval)
+    
+    # Создаем массив состояний каждого символа
+    states = [0] * len(text)  # 0 = полностью скрыт, 4 = полностью виден
+    
+    emojis_cycle = ['💚', '💙', '💜', '🔮', '✨', '💫', '⚡', '🌟']
+    
+    for frame in range(frames_count):
+        # Случайно продвигаем состояние некоторых символов
+        chars_to_advance = max(1, len(text) // (frames_count - frame) if frame < frames_count - 1 else len(text))
+        
+        for _ in range(chars_to_advance):
+            hidden_indices = [i for i, s in enumerate(states) if s < 4]
+            if hidden_indices:
+                idx = random.choice(hidden_indices)
+                states[idx] = min(4, states[idx] + 1)
+        
+        # Формируем текущий кадр
+        current = []
+        for i, char in enumerate(text):
+            if char == ' ':
+                current.append(' ')
+            else:
+                state = states[i]
+                if state >= 4:
+                    current.append(char)
+                else:
+                    current.append(blocks[state])
+        
+        # Добавляем цветной прогресс-бар
+        progress = int((frame / frames_count) * 15)
+        progress_bar = '█' * progress + '▓' * min(5, 15 - progress) + '░' * max(0, 15 - progress - 5)
+        
+        emoji = emojis_cycle[frame % len(emojis_cycle)]
+        frame_text = f'{emoji} {"".join(current)}\n╠{progress_bar}╣ {int((frame / frames_count) * 100)}%'
+        
+        try:
+            await message_obj.edit(frame_text)
+            await asyncio.sleep(interval)
+        except Exception as e:
+            print(f'⚠️ Ошибка анимации: {e}')
+            break
+    
+    # Финальный текст
+    try:
+        await message_obj.edit(f'💎 {text}')
+    except:
+        pass
+
+
+async def run_animation(message_obj, text, animation_type, duration=40, interval=0.5):
+    """Запуск анимации выбранного типа"""
+    if animation_type == 'typewriter':
+        await animate_typewriter(message_obj, text, duration, interval)
+    elif animation_type == 'glitch':
+        await animate_glitch(message_obj, text, duration, interval)
+    elif animation_type == 'matrix':
+        await animate_matrix(message_obj, text, duration, interval)
+    else:
+        print(f'⚠️ Неизвестный тип анимации: {animation_type}')
 
 
 def load_active_chats():
@@ -977,6 +1177,150 @@ _Команды автоматически удаляются._'''
     return False
 
 
+# ============ ОБРАБОТЧИКИ КОМАНД АНИМАЦИЙ ============
+async def handle_animation_commands(event, message_text):
+    """Обработка команд анимаций"""
+    
+    chat_id = event.chat_id
+    
+    # Удаляем предыдущую команду
+    await delete_previous_command(chat_id)
+    
+    # .anim help - справка
+    if message_text.lower() == '.anim help':
+        help_text = '''🎬 **КОМАНДЫ АНИМАЦИЙ:**
+
+**Разовая анимация:**
+• `.anim typewriter текст` - печатная машинка ⌨️
+• `.anim glitch текст` - глитч эффект ⚡
+• `.anim matrix текст` - матрица эффект 💚
+
+**Постоянный режим:**
+• `.anim mode typewriter` - включить режим
+• `.anim mode glitch` - включить режим
+• `.anim mode matrix` - включить режим
+• `.anim mode off` - выключить режим
+
+**Информация:**
+• `.anim status` - текущий статус режима
+• `.anim help` - эта справка
+
+**Примеры:**
+```
+.anim typewriter Привет, как дела?
+.anim glitch Это глитч эффект!
+.anim matrix Добро пожаловать в матрицу
+```
+
+**Режим:** После `.anim mode typewriter` все ваши сообщения будут анимироваться автоматически! 🎨
+
+⏱️ Длительность: 40 сек
+🎯 Интервал: 0.5 сек
+✨ Работает везде: личные чаты, группы, каналы
+
+_Команда удаляется автоматически._'''
+        
+        msg = await event.respond(help_text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    # .anim status - статус режима
+    if message_text.lower() == '.anim status':
+        mode = get_animation_mode(chat_id)
+        
+        if mode:
+            status_emoji = {
+                'typewriter': '⌨️',
+                'glitch': '⚡',
+                'matrix': '💚'
+            }
+            emoji = status_emoji.get(mode, '🎬')
+            status_text = f'🎬 **Статус анимаций:**\n\n'
+            status_text += f'{emoji} Режим: **{mode.upper()}**\n'
+            status_text += f'✅ Постоянный режим **ВКЛЮЧЕН**\n\n'
+            status_text += f'💡 Все ваши сообщения в этом чате будут анимироваться!\n'
+            status_text += f'Для выключения: `.anim mode off`'
+        else:
+            status_text = f'🎬 **Статус анимаций:**\n\n'
+            status_text += f'❌ Постоянный режим **ВЫКЛЮЧЕН**\n\n'
+            status_text += f'💡 Для разовой анимации:\n'
+            status_text += f'`.anim typewriter ваш текст`\n\n'
+            status_text += f'💡 Для постоянного режима:\n'
+            status_text += f'`.anim mode typewriter`'
+        
+        msg = await event.respond(status_text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    # .anim mode <type> - установка режима
+    if message_text.lower().startswith('.anim mode '):
+        parts = message_text.split(maxsplit=2)
+        
+        if len(parts) < 3:
+            msg = await event.respond('❌ Используйте: `.anim mode typewriter/glitch/matrix/off`')
+            await event.delete()
+            await register_command_message(chat_id, msg.id)
+            return True
+        
+        mode = parts[2].lower()
+        
+        if mode == 'off':
+            set_animation_mode(chat_id, None)
+            msg = await event.respond('❌ Постоянный режим анимаций **ВЫКЛЮЧЕН**')
+        elif mode in ['typewriter', 'glitch', 'matrix']:
+            set_animation_mode(chat_id, mode)
+            emoji_map = {
+                'typewriter': '⌨️',
+                'glitch': '⚡',
+                'matrix': '💚'
+            }
+            msg = await event.respond(
+                f'{emoji_map[mode]} Режим **{mode.upper()}** включен!\n\n'
+                f'Теперь все ваши сообщения будут анимироваться автоматически! 🎨'
+            )
+        else:
+            msg = await event.respond('❌ Неизвестный режим! Доступны: typewriter, glitch, matrix, off')
+        
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    # .anim <type> <text> - разовая анимация
+    if message_text.lower().startswith('.anim '):
+        parts = message_text.split(maxsplit=2)
+        
+        if len(parts) < 3:
+            msg = await event.respond('❌ Используйте: `.anim typewriter текст`')
+            await event.delete()
+            await register_command_message(chat_id, msg.id)
+            return True
+        
+        animation_type = parts[1].lower()
+        text = parts[2]
+        
+        if animation_type not in ['typewriter', 'glitch', 'matrix']:
+            msg = await event.respond('❌ Неизвестный тип! Доступны: typewriter, glitch, matrix')
+            await event.delete()
+            await register_command_message(chat_id, msg.id)
+            return True
+        
+        # Удаляем команду сразу
+        await event.delete()
+        
+        # Создаем новое сообщение для анимации
+        animation_msg = await event.respond('🎬 Запуск анимации...')
+        
+        # Запускаем анимацию
+        print(f'🎬 Запуск анимации {animation_type} в чате {chat_id}')
+        await run_animation(animation_msg, text, animation_type, duration=40, interval=0.5)
+        
+        return True
+    
+    return False
+
+
 # ============ ОБРАБОТЧИК НОВЫХ СООБЩЕНИЙ (НЕМЕДЛЕННОЕ сохранение) ============
 @client.on(events.NewMessage(incoming=True, from_users=None))
 async def immediate_save_handler(event):
@@ -1201,7 +1545,13 @@ async def outgoing_handler(event):
             if handled:
                 return
 
-        # ПРИОРИТЕТ 2: AI команды
+        # ПРИОРИТЕТ 2: Команды анимаций
+        if message_text.lower().startswith('.anim'):
+            handled = await handle_animation_commands(event, message_text)
+            if handled:
+                return
+
+        # ПРИОРИТЕТ 3: AI команды
         if ACTIVATION_COMMAND.lower() in message_text.lower():
             await delete_previous_command(chat_id)
             activate_chat(chat_id)
@@ -1229,6 +1579,17 @@ async def outgoing_handler(event):
                 await event.delete()
                 await register_command_message(chat_id, msg.id)
             return
+
+        # ПРИОРИТЕТ 4: Автоматическая анимация если режим включен
+        animation_mode = get_animation_mode(chat_id)
+        if animation_mode and message_text.strip():
+            # Проверяем что это не команда
+            if not message_text.startswith('.') and not message_text.lower().startswith('ai '):
+                print(f'🎬 Автоматическая анимация {animation_mode} для сообщения в чате {chat_id}')
+                
+                # Запускаем анимацию прямо на этом сообщении
+                await run_animation(event.message, message_text, animation_mode, duration=40, interval=0.5)
+                return
 
     except Exception as e:
         print(f'❌ Ошибка обработки исходящего: {e}')
@@ -1269,14 +1630,17 @@ async def main():
         print(f'🤖 AI: {MODEL_NAME}')
         print(f'🔑 Команда: "{ACTIVATION_COMMAND}"')
         
-        print('\n🆕 **НОВЫЕ ВОЗМОЖНОСТИ:**')
+        print('\n🆕 **ВОЗМОЖНОСТИ:**')
         print('⚡ Мгновенное сохранение (даже если удалено сразу)')
         print('🗂️ Просмотр всех удаленных (.saver all)')
         print('📤 Медиа автоматически в Избранное')
         print('🧹 Умное удаление команд')
         print('🚫 Команды не показываются в истории')
+        print('🎬 3 типа анимаций текста (typewriter, glitch, matrix)')
         
-        print('\n📝 Команды: .saver help')
+        print('\n📝 Команды:')
+        print('   .saver help - управление сохранением')
+        print('   .anim help - управление анимациями')
         print('⏹️ Ctrl+C для остановки\n')
         print('🎧 Слушаю сообщения...\n')
 
