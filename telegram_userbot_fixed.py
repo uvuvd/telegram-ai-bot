@@ -36,7 +36,7 @@ MEDIA_FOLDER = 'saved_media'
 OWNER_ID = None
 
 last_command_message = {}
-COMMAND_PREFIXES = ['.saver', 'ai stop', 'ai clear', 'ai edem', '.anim', '.замолчи', '.говори']
+COMMAND_PREFIXES = ['.saver', '.deleted', 'ai stop', 'ai clear', 'ai edem', '.anim', '.замолчи', '.говори']
 
 # ============ БАЗОВЫЕ ФУНКЦИИ БД ============
 def load_db():
@@ -412,7 +412,7 @@ def is_command_message(text):
     if not text:
         return False
     text_lower = text.lower().strip()
-    return any(text_lower.startswith(prefix.lower()) for prefix in COMMAND_PREFIXES)
+    return any(text_lower.startswith(prefix) for prefix in COMMAND_PREFIXES)
 
 def load_deleted_messages_db():
     if os.path.exists(DELETED_MESSAGES_DB):
@@ -469,30 +469,108 @@ def add_deleted_message(chat_id, message_data):
         db[chat_key] = db[chat_key][-1000:]
     save_deleted_messages_db(db)
 
-def get_deleted_messages(chat_id, limit=None, sender_id=None):
+# НОВЫЕ ФУНКЦИИ ДЛЯ .deleted КОМАНД
+def get_deleted_messages(chat_id=None, limit=None, sender_id=None, message_type=None):
+    """Получить удаленные сообщения с фильтрацией"""
     db = load_deleted_messages_db()
-    chat_key = str(chat_id)
-    if chat_key not in db:
-        return []
-    messages = [msg for msg in db[chat_key] if not is_command_message(msg.get('text', ''))]
-    if sender_id is not None:
-        messages = [msg for msg in messages if msg.get('sender_id') == sender_id]
-    if limit is not None:
-        messages = messages[-limit:]
+    messages = []
+    
+    chat_keys = [str(chat_id)] if chat_id is not None else db.keys()
+    
+    for ck in chat_keys:
+        if ck not in db:
+            continue
+        for msg in db[ck]:
+            if is_command_message(msg.get('text', '')):
+                continue
+            if sender_id is not None and msg.get('sender_id') != sender_id:
+                continue
+                
+            if message_type == 'photo' and not msg.get('has_photo'):
+                continue
+            if message_type == 'video' and not msg.get('has_video'):
+                continue
+            if message_type == 'document' and not msg.get('has_document'):
+                continue
+            if message_type == 'text' and (msg.get('has_photo') or msg.get('has_video') or msg.get('has_document')):
+                continue
+                
+            messages.append(msg)
+    
+    messages.sort(key=lambda x: x.get('deleted_at', ''), reverse=True)
+    if limit:
+        messages = messages[:limit]
     return messages
 
-def clear_deleted_messages(chat_id):
+def clear_deleted_messages_by_type(chat_id, message_type, target_chat_id=None):
+    """Очистить удаленные сообщения по типу"""
+    db = load_deleted_messages_db()
+    target = str(target_chat_id) if target_chat_id is not None else str(chat_id)
+    
+    if target not in db:
+        return False
+    
+    messages = db[target]
+    
+    if message_type == 'all':
+        db[target] = []
+    else:
+        if message_type == 'photo':
+            db[target] = [m for m in messages if not m.get('has_photo')]
+        elif message_type == 'video':
+            db[target] = [m for m in messages if not m.get('has_video')]
+        elif message_type == 'document':
+            db[target] = [m for m in messages if not m.get('has_document')]
+        elif message_type == 'text':
+            db[target] = [m for m in messages if not (m.get('has_photo') or m.get('has_video') or m.get('has_document'))]
+    
+    save_deleted_messages_db(db)
+    return True
+
+def delete_specific_deleted_message(chat_id, message_id):
+    """Удалить конкретное сообщение из базы"""
     db = load_deleted_messages_db()
     chat_key = str(chat_id)
+    
     if chat_key in db:
-        db[chat_key] = []
+        db[chat_key] = [m for m in db[chat_key] if m.get('message_id') != message_id]
         save_deleted_messages_db(db)
+        return True
+    return False
 
 async def save_media_file(message, media_folder=MEDIA_FOLDER):
+    """Сохранение медиа с поддержкой TTL (скоротечных)"""
     try:
         Path(media_folder).mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         chat_id, msg_id = message.chat_id, message.id
+        
+        # Детекция TTL-медиа
+        is_ttl = False
+        if hasattr(message, 'media') and message.media:
+            if hasattr(message.media, 'ttl_seconds') and message.media.ttl_seconds:
+                is_ttl = True
+        
+        if is_ttl:
+            temp_path = f"{MEDIA_FOLDER}/temp_{msg_id}_{timestamp}.mp4"
+            try:
+                await message.download_media(file=temp_path)
+                if message.photo:
+                    ext = "jpg"
+                elif message.video:
+                    ext = "mp4"
+                else:
+                    ext = "mp4"
+                filename = f'media_{chat_id}_{msg_id}_{timestamp}.{ext}'
+                final_path = os.path.join(media_folder, filename)
+                os.rename(temp_path, final_path)
+                print(f'💾 TTL сохранено: {filename}')
+                return final_path
+            except Exception as e:
+                print(f'⚠️ Не удалось сохранить TTL-медиа: {e}')
+                return None
+                
+        # Обычные медиа
         if message.photo:
             ext, mtype = 'jpg', 'photo'
         elif message.video:
@@ -507,12 +585,15 @@ async def save_media_file(message, media_folder=MEDIA_FOLDER):
             mtype = 'document'
         else:
             return None
+            
         filename = f'{mtype}_{chat_id}_{msg_id}_{timestamp}.{ext}'
         filepath = os.path.join(media_folder, filename)
         await message.download_media(filepath)
         print(f'💾 Сохранен: {filename}')
         return filepath
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f'⚠️ Ошибка сохранения медиа: {e}')
         return None
 
@@ -586,23 +667,6 @@ async def delete_previous_command(chat_id):
 
 async def register_command_message(chat_id, message_id):
     last_command_message[chat_id] = message_id
-
-async def send_to_saved_messages(media_path, caption, message_data):
-    try:
-        full_caption = f"🗑️ **Удаленное сообщение**\n\n"
-        full_caption += f"📅 Удалено: {message_data.get('deleted_at', 'н/д')}\n"
-        full_caption += f"👤 От: {message_data.get('sender_name', 'Неизвестно')}\n"
-        full_caption += f"💬 Чат ID: `{message_data.get('chat_id')}`\n\n"
-        if caption:
-            full_caption += f"📝 Текст: {caption}\n\n"
-        full_caption += f"🔗 ID: {message_data.get('message_id')}"
-        if media_path and os.path.exists(media_path):
-            await client.send_file('me', media_path, caption=full_caption)
-            return True
-        return False
-    except Exception as e:
-        print(f'⚠️ Ошибка отправки: {e}')
-        return False
 
 # ============ ОБРАБОТЧИКИ КОМАНД ============
 async def handle_saver_commands(event, message_text):
@@ -680,7 +744,7 @@ async def handle_saver_commands(event, message_text):
         return True
     
     if message_text.lower() == '.saver clear':
-        clear_deleted_messages(chat_id)
+        clear_deleted_messages_by_type(chat_id, 'all')
         msg = await event.respond('🗑️ Очищено!')
         await event.delete()
         await register_command_message(chat_id, msg.id)
@@ -693,13 +757,128 @@ async def handle_saver_commands(event, message_text):
 • `.saver groups on/off` - группы
 • `.saver add/remove` - текущий чат
 • `.saver show` - последние 10
-• `.saver clear` - очистить
-• `.saver help` - справка'''
+• `.saver clear` - очистить вся'''
         msg = await event.respond(help_text)
         await event.delete()
         await register_command_message(chat_id, msg.id)
         return True
     
+    return False
+
+async def handle_deleted_commands(event, message_text):
+    """Новые команды для управления памятью (начинаются с .deleted)"""
+    chat_id = event.chat_id
+    await delete_previous_command(chat_id)
+    parts = message_text.split()
+    
+    # Справка
+    if len(parts) == 2 and parts[1] == 'help':
+        help_text = '''🗑️ **Управление памятью (команды .deleted)**
+        
+• `.deleted list [тип] [лимит]` - Показать удаленные
+  *Типы:* `photo`, `video`, `document`, `text`, `all` (по умолчанию)
+  *Пример:* `.deleted list photo 10`
+  
+• `.deleted clear <тип> [чат_id]` - Очистить память
+  *Типы:* `photo`, `video`, `document`, `text`, `all`
+  *Пример:* 
+  `.deleted clear photo` - очистить фото в этом чате
+  `.deleted clear all -100123456789` - очистить ВСЁ в указанном чате
+  
+• `.deleted delete <чат_id> <id_сообщения>` - Удалить конкретное сообщение из памяти
+  *Пример:* `.deleted delete -100123456789 1672345`'''
+        msg = await event.respond(help_text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+
+    # Список удаленных
+    if parts[1] == 'list':
+        message_type = 'all'
+        limit = 10
+        if len(parts) >= 3:
+            if parts[2] in ['photo', 'video', 'document', 'text', 'all']:
+                message_type = parts[2]
+        if len(parts) >= 4:
+            try:
+                limit = int(parts[3])
+            except ValueError:
+                pass
+                
+        msgs = get_deleted_messages(chat_id, limit=limit, message_type=message_type)
+        if not msgs:
+            text = "📭 Нет удаленных сообщений"
+        else:
+            text = f"🗑️ **Последние {len(msgs)} удаленных ({message_type.upper()}):**\n\n"
+            for i, m in enumerate(msgs, 1):
+                text_type = "📝"
+                if m.get('has_photo'): text_type = "🖼️"
+                elif m.get('has_video'): text_type = "🎥"
+                elif m.get('has_document'): text_type = "📄"
+                sender = m.get('sender_name', 'Неизвестно')
+                text += f"{i}. {text_type} {sender}\n"
+                text += f"   ID: `{m.get('message_id')}` | Удалено: {m.get('deleted_at', '')[:16]}\n"
+                text += f"   Текст: {m.get('text', '')[:50]}\n\n"
+        msg = await event.respond(text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+
+    # Очистка по типу
+    if parts[1] == 'clear':
+        if len(parts) < 3:
+            msg = await event.respond("❌ Укажите тип! Пример: `.deleted clear photo`")
+            await event.delete()
+            await register_command_message(chat_id, msg.id)
+            return True
+            
+        message_type = parts[2]
+        target_chat_id = None
+        if len(parts) >= 4:
+            try:
+                target_chat_id = int(parts[3])
+            except ValueError:
+                pass
+                
+        if message_type not in ['photo', 'video', 'document', 'text', 'all']:
+            msg = await event.respond("❌ Неправильный тип! Допустимые: photo, video, document, text, all")
+            await event.delete()
+            await register_command_message(chat_id, msg.id)
+            return True
+            
+        success = clear_deleted_messages_by_type(chat_id, message_type, target_chat_id)
+        if success:
+            target_info = f"в чате `{target_chat_id}`" if target_chat_id else "в этом чате"
+            text = f"✅ Очищено: **{message_type.upper()}** {target_info}"
+        else:
+            text = "⚠️ Чат не найден в базе"
+        msg = await event.respond(text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+
+    # Удаление конкретного сообщения
+    if parts[1] == 'delete':
+        if len(parts) != 4:
+            msg = await event.respond("❌ Формат: `.deleted delete <чат_id> <id_сообщения>`")
+            await event.delete()
+            await register_command_message(chat_id, msg.id)
+            return True
+        try:
+            target_chat_id = int(parts[2])
+            message_id = int(parts[3])
+            if delete_specific_deleted_message(target_chat_id, message_id):
+                msg = await event.respond(f"✅ Сообщение `{message_id}` удалено из чата `{target_chat_id}`")
+            else:
+                msg = await event.respond("❌ Сообщение не найдено в базе")
+            await event.delete()
+            await register_command_message(chat_id, msg.id)
+            return True
+        except ValueError:
+            msg = await event.respond("❌ Неверный формат ID! Должны быть числа.")
+            await event.delete()
+            await register_command_message(chat_id, msg.id)
+            return True
     return False
 
 async def handle_animation_commands(event, message_text):
@@ -924,9 +1103,9 @@ async def immediate_save_handler(event):
             'text': event.message.message or '',
             'date': event.message.date.isoformat() if event.message.date else None,
             'has_photo': bool(event.message.photo),
-            'has_video': bool(event.message.video),
+            'has_video': bool(event.video),
             'has_document': bool(event.message.document),
-            'is_ttl': bool(event.message.ttl_period),
+            'is_ttl': bool(getattr(event.message, 'ttl_period', None)),  # Исправлено для TTL
             'media_path': None
         }
         
@@ -950,7 +1129,8 @@ async def deleted_message_handler(event):
                 message_data['deleted_at'] = datetime.now().isoformat()
                 add_deleted_message(real_chat_id, message_data)
                 if message_data.get('media_path') and os.path.exists(message_data['media_path']):
-                    await send_to_saved_messages(message_data['media_path'], message_data.get('text', ''), message_data)
+                    # Не отправляем автоматически - только сохраняем в базу
+                    pass
     except Exception as e:
         print(f'❌ Ошибка обработки удаленного: {e}')
 
@@ -984,6 +1164,11 @@ async def outgoing_handler(event):
         chat_id = event.chat_id
         message_text = event.message.message or ''
         
+        # Обработка новых команд .deleted
+        if message_text.lower().startswith('.deleted'):
+            if await handle_deleted_commands(event, message_text):
+                return
+                
         if message_text.lower().startswith('.saver'):
             if await handle_saver_commands(event, message_text):
                 return
@@ -1056,14 +1241,15 @@ async def main():
         print(f'🤖 AI: {MODEL_NAME}')
         print(f'\n🆕 ВОЗМОЖНОСТИ:')
         print('⚡ Мгновенное сохранение удаленных')
-        print('🎬 7 типов анимаций (typewriter, glitch, matrix, wave, rainbow, decrypt, loading)')
+        print('🎬 7 типов анимаций')
         print('⏱️ Настройка длительности и интервала')
         print('🔇 Команды .замолчи/.говори для автоудаления')
+        print('🗑️ **НОВОЕ:** Управление памятью через `.deleted`')
         print('\n📝 Команды:')
         print('   .saver help - управление сохранением')
+        print('   .deleted help - управление памятью (фото/видео/текст)')
         print('   .anim help - управление анимациями')
-        print('   .замолчи - заглушить пользователя (ответом)')
-        print('   .говори - разглушить (ответом)')
+        print('   .замолчи - заглушить пользователя')
         print('   .замолчи список - список заглушенных')
         print('\n🎧 Слушаю...\n')
         
