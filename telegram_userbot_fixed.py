@@ -158,20 +158,38 @@ def store_message_immediately(chat_id, message_data):
 
 
 def get_stored_message(chat_id, message_id):
-    """Получить сохраненное сообщение по ID"""
+    """Получить сохраненное сообщение по ID
+    
+    Если chat_id=None, ищем по всем чатам (проблема Telethon с MessageDeleted)
+    """
     storage = load_messages_storage()
-    chat_key = str(chat_id)
     
-    if chat_key not in storage:
-        print(f'   ⚠️ Чат {chat_key} не найден в storage')
-        return None
+    # Если chat_id известен - ищем только в этом чате
+    if chat_id is not None:
+        chat_key = str(chat_id)
+        
+        if chat_key not in storage:
+            print(f'   ⚠️ Чат {chat_key} не найден в storage')
+            # Пробуем искать по всем чатам на всякий случай
+            print(f'   🔍 Пробуем искать по всем чатам...')
+        else:
+            for msg in storage[chat_key]:
+                if msg.get('message_id') == message_id:
+                    print(f'   ✅ Сообщение {message_id} найдено в чате {chat_key}')
+                    return msg
+            
+            print(f'   ⚠️ Сообщение {message_id} НЕ найдено в чате {chat_key} (всего: {len(storage[chat_key])})')
     
-    for msg in storage[chat_key]:
-        if msg.get('message_id') == message_id:
-            print(f'   ✅ Сообщение {message_id} найдено в storage')
-            return msg
+    # Если не нашли или chat_id=None - ищем по ВСЕМ чатам
+    print(f'   🔍 Поиск сообщения {message_id} по ВСЕМ чатам...')
     
-    print(f'   ⚠️ Сообщение {message_id} НЕ найдено в storage (всего сообщений в чате: {len(storage[chat_key])})')
+    for chat_key, messages in storage.items():
+        for msg in messages:
+            if msg.get('message_id') == message_id:
+                print(f'   ✅ Сообщение {message_id} найдено в чате {chat_key}!')
+                return msg
+    
+    print(f'   ❌ Сообщение {message_id} НЕ найдено ни в одном чате')
     return None
 
 
@@ -864,23 +882,32 @@ async def handle_saver_commands(event, message_text):
         chat_key = str(chat_id)
         
         debug_text = '🔍 **ДИАГНОСТИКА STORAGE:**\n\n'
+        debug_text += f'🏠 **Текущий чат:** {chat_id}\n\n'
         
         if chat_key in storage and storage[chat_key]:
             messages_count = len(storage[chat_key])
-            debug_text += f'📦 Сообщений в storage для этого чата: **{messages_count}**\n\n'
-            debug_text += f'🕐 Последние 5 сообщений:\n'
+            debug_text += f'📦 Сообщений в storage: **{messages_count}**\n\n'
+            
+            # Показываем все message_id
+            debug_text += f'🔢 **Message IDs в storage:**\n'
+            msg_ids = [str(msg.get('message_id', '?')) for msg in storage[chat_key]]
+            debug_text += ', '.join(msg_ids[-20:])  # Последние 20
+            if len(msg_ids) > 20:
+                debug_text += f'\n... и еще {len(msg_ids) - 20} старых'
+            
+            debug_text += f'\n\n🕐 **Последние 5 сообщений:**\n'
             
             for i, msg in enumerate(storage[chat_key][-5:], 1):
                 sender = msg.get('sender_name', 'н/д')
-                text = msg.get('text', '')[:40]
+                text = msg.get('text', '')[:30]
                 msg_id = msg.get('message_id', 'н/д')
-                debug_text += f'{i}. MSG {msg_id} от {sender}\n   "{text}"\n'
+                debug_text += f'{i}. MSG `{msg_id}` от {sender}\n   "{text}"\n'
         else:
-            debug_text += f'❌ Нет сообщений в storage для чата {chat_id}\n\n'
-            debug_text += f'💡 Это может быть потому что:\n'
+            debug_text += f'❌ **Нет сообщений в storage**\n\n'
+            debug_text += f'💡 Возможные причины:\n'
             debug_text += f'• Сохранение не включено\n'
             debug_text += f'• Еще не было входящих сообщений\n'
-            debug_text += f'• OWNER_ID = {OWNER_ID}\n'
+            debug_text += f'• Все сообщения были от вас\n'
         
         # Проверяем конфиг
         config = load_saver_config()
@@ -893,6 +920,14 @@ async def handle_saver_commands(event, message_text):
         debug_text += f'• Личные чаты: {"✅" if config["save_private"] else "❌"}\n'
         debug_text += f'• Группы: {"✅" if config["save_groups"] else "❌"}\n'
         debug_text += f'• Тип чата: {"личный" if is_private else "группа" if is_group else "канал"}\n'
+        debug_text += f'\n🆔 **Технические данные:**\n'
+        debug_text += f'• OWNER_ID: `{OWNER_ID}`\n'
+        debug_text += f'• Chat ID: `{chat_id}`\n'
+        
+        # Проверяем deleted_messages_db
+        deleted_db = load_deleted_messages_db()
+        if chat_key in deleted_db and deleted_db[chat_key]:
+            debug_text += f'\n🗑️ **Удаленных сообщений сохранено:** {len(deleted_db[chat_key])}\n'
         
         msg = await event.respond(debug_text)
         await event.delete()
@@ -949,24 +984,34 @@ async def immediate_save_handler(event):
     try:
         chat_id = event.chat_id
         message_id = event.message.id
+        sender_id = event.sender_id
+        
+        print(f'\n📨 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+        print(f'📨 НОВОЕ сообщение')
+        print(f'   Chat ID: {chat_id}')
+        print(f'   Message ID: {message_id}')
+        print(f'   Sender ID: {sender_id}')
+        print(f'   OWNER_ID: {OWNER_ID}')
         
         # ВАЖНО: Пропускаем свои сообщения
-        if event.sender_id == OWNER_ID:
-            print(f'⏭️ Пропускаем свое сообщение {message_id}')
+        if OWNER_ID is not None and sender_id == OWNER_ID:
+            print(f'   ⏭️ Это СВОЕ сообщение - пропускаем')
+            print(f'📨 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
             return
         
         # Проверяем, нужно ли сохранять
         is_private = event.is_private
         is_group = event.is_group
         
+        print(f'   Тип: {"личный" if is_private else "группа" if is_group else "канал"}')
+        
         should_save = should_save_message(chat_id, is_private, is_group)
         
-        print(f'📨 Новое ВХОДЯЩЕЕ сообщение {message_id} в чате {chat_id}')
-        print(f'   От: {event.sender_id}')
-        print(f'   Сохранение: {"✅" if should_save else "❌"}')
+        print(f'   Сохранение: {"✅ ВКЛ" if should_save else "❌ ВЫКЛ"}')
         
         if not should_save:
             print(f'   ⏭️ Сохранение выключено для этого чата')
+            print(f'📨 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
             return
         
         # Получаем информацию о сообщении
@@ -978,12 +1023,12 @@ async def immediate_save_handler(event):
         message_text = event.message.message or ''
         
         print(f'   Отправитель: {sender_name}')
-        print(f'   Текст: {message_text[:50]}...')
+        print(f'   Текст: {message_text[:50]}{"..." if len(message_text) > 50 else ""}')
         
         message_data = {
             'chat_id': chat_id,
             'message_id': message_id,
-            'sender_id': event.sender_id,
+            'sender_id': sender_id,
             'sender_name': sender_name,
             'text': message_text,
             'date': event.message.date.isoformat() if event.message.date else None,
@@ -1007,8 +1052,8 @@ async def immediate_save_handler(event):
         # НЕМЕДЛЕННО сохраняем в постоянное хранилище
         store_message_immediately(chat_id, message_data)
         
-        print(f'   ✅ Сообщение {message_id} НЕМЕДЛЕННО сохранено в storage!')
-        print(f'   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+        print(f'   ✅ Сообщение {message_id} СОХРАНЕНО в storage!')
+        print(f'📨 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
         
     except Exception as e:
         print(f'❌ ОШИБКА немедленного сохранения: {e}')
@@ -1025,7 +1070,8 @@ async def deleted_message_handler(event):
         deleted_ids = event.deleted_ids
         
         print(f'\n🗑️ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-        print(f'🗑️ ОБНАРУЖЕНО УДАЛЕНИЕ в чате {chat_id}')
+        print(f'🗑️ ОБНАРУЖЕНО УДАЛЕНИЕ')
+        print(f'🗑️ event.chat_id: {chat_id}')
         print(f'🗑️ Количество удаленных ID: {len(deleted_ids)}')
         print(f'🗑️ ID: {deleted_ids}')
         
@@ -1033,18 +1079,21 @@ async def deleted_message_handler(event):
         not_found_count = 0
         
         for message_id in deleted_ids:
-            # Получаем сообщение из постоянного хранилища
+            # ВАЖНО: Ищем сообщение (функция сама ищет по всем чатам если chat_id=None)
             message_data = get_stored_message(chat_id, message_id)
             
             if message_data:
-                print(f'   ✅ Найдено в storage: {message_id}')
+                # Используем chat_id из самого сообщения (он точно правильный)
+                real_chat_id = message_data.get('chat_id')
+                
+                print(f'   ✅ Найдено: MSG {message_id} в чате {real_chat_id}')
                 print(f'      От: {message_data.get("sender_name")}')
                 print(f'      Текст: {message_data.get("text", "")[:50]}')
                 
                 message_data['deleted_at'] = datetime.now().isoformat()
                 
-                # Сохраняем в базу удаленных (фильтр команд внутри функции)
-                add_deleted_message(chat_id, message_data)
+                # Сохраняем в базу удаленных (используем правильный chat_id)
+                add_deleted_message(real_chat_id, message_data)
                 saved_count += 1
                 
                 # Если есть медиа - отправляем в Избранное
