@@ -29,7 +29,7 @@ DELETED_MESSAGES_DB = 'deleted_messages.json'
 SAVER_CONFIG_FILE = 'saver_config.json'
 MESSAGES_STORAGE_DB = 'messages_storage.json'
 ANIMATION_CONFIG_FILE = 'animation_config.json'
-MUTE_CONFIG_FILE = 'mute_config.json'  # НОВОЕ
+MUTE_CONFIG_FILE = 'mute_config.json'
 
 SESSION_NAME = 'railway_session'
 MEDIA_FOLDER = 'saved_media'
@@ -37,6 +37,118 @@ OWNER_ID = None
 
 last_command_message = {}
 COMMAND_PREFIXES = ['.saver', 'ai stop', 'ai clear', 'ai edem', '.anim', '.замолчи', '.говори']
+
+# ============ БАЗОВЫЕ ФУНКЦИИ БД ============
+def load_db():
+    """Загрузка основной БД сообщений для AI"""
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_db(data):
+    """Сохранение основной БД"""
+    try:
+        with open(DB_FILE, 'w') as f:
+            json.dump(data, f)
+    except:
+        pass
+
+def load_animation_config():
+    """Загрузка конфига анимаций"""
+    if os.path.exists(ANIMATION_CONFIG_FILE):
+        try:
+            with open(ANIMATION_CONFIG_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_animation_config(config):
+    """Сохранение конфига анимаций"""
+    try:
+        with open(ANIMATION_CONFIG_FILE, 'w') as f:
+            json.dump(config, f)
+    except:
+        pass
+
+def get_animation_settings(chat_id):
+    """Получить настройки анимации для чата"""
+    config = load_animation_config()
+    chat_key = str(chat_id)
+    if chat_key in config:
+        settings = config[chat_key]
+        return {
+            'mode': settings.get('mode'),
+            'duration': settings.get('duration', 40),
+            'interval': settings.get('interval', 0.5)
+        }
+    return {'mode': None, 'duration': 40, 'interval': 0.5}
+
+def set_animation_mode(chat_id, mode):
+    """Установить режим анимации"""
+    config = load_animation_config()
+    chat_key = str(chat_id)
+    if chat_key not in config:
+        config[chat_key] = {'duration': 40, 'interval': 0.5}
+    config[chat_key]['mode'] = mode
+    save_animation_config(config)
+
+def load_mute_config():
+    """Загрузка конфига заглушенных"""
+    if os.path.exists(MUTE_CONFIG_FILE):
+        try:
+            with open(MUTE_CONFIG_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_mute_config(config):
+    """Сохранение конфига заглушенных"""
+    try:
+        with open(MUTE_CONFIG_FILE, 'w') as f:
+            json.dump(config, f)
+    except:
+        pass
+
+def mute_user(chat_id, user_id, user_name):
+    """Заглушить пользователя"""
+    config = load_mute_config()
+    chat_key = str(chat_id)
+    if chat_key not in config:
+        config[chat_key] = {}
+    config[chat_key][str(user_id)] = {
+        'user_name': user_name,
+        'muted_at': datetime.now().isoformat()
+    }
+    save_mute_config(config)
+
+def unmute_user(chat_id, user_id):
+    """Разглушить пользователя"""
+    config = load_mute_config()
+    chat_key = str(chat_id)
+    if chat_key in config and str(user_id) in config[chat_key]:
+        user_info = config[chat_key].pop(str(user_id))
+        save_mute_config(config)
+        return user_info
+    return None
+
+def is_user_muted(chat_id, user_id):
+    """Проверить, заглушен ли пользователь"""
+    config = load_mute_config()
+    chat_key = str(chat_id)
+    return chat_key in config and str(user_id) in config[chat_key]
+
+def get_muted_users(chat_id):
+    """Получить список заглушенных"""
+    config = load_mute_config()
+    chat_key = str(chat_id)
+    return config.get(chat_key, {})
+
 # ============ АНИМАЦИОННЫЕ ФУНКЦИИ ============
 async def animate_typewriter(message_obj, text, duration=40, interval=0.5):
     frames_count = int(duration / interval)
@@ -47,10 +159,12 @@ async def animate_typewriter(message_obj, text, duration=40, interval=0.5):
         try:
             await message_obj.edit(f'{random.choice(emojis)} {current_text}')
             await asyncio.sleep(interval)
-        except: break
+        except:
+            break
     try:
         await message_obj.edit(f'✅ {text}')
-    except: pass
+    except:
+        pass
 
 async def animate_glitch(message_obj, text, duration=40, interval=0.5):
     glitch_chars = '₽₩€∑∏π∫ªº∆©®™℅℉№⁂※‽⁇⁈⁉‼‰‱⁀⁁⁂'
@@ -74,10 +188,12 @@ async def animate_glitch(message_obj, text, duration=40, interval=0.5):
         try:
             await message_obj.edit(f'⚡ {"".join(current)}\n[{bar}] {int((frame/frames_count)*100)}%')
             await asyncio.sleep(interval)
-        except: break
+        except:
+            break
     try:
         await message_obj.edit(f'✨ {text}')
-    except: pass
+    except:
+        pass
 
 async def animate_matrix(message_obj, text, duration=40, interval=0.5):
     blocks = ['█', '▓', '▒', '░', '']
@@ -101,13 +217,14 @@ async def animate_matrix(message_obj, text, duration=40, interval=0.5):
         try:
             await message_obj.edit(f'{emojis[frame%len(emojis)]} {"".join(current)}\n╠{bar}╣ {int((frame/frames_count)*100)}%')
             await asyncio.sleep(interval)
-        except: break
+        except:
+            break
     try:
         await message_obj.edit(f'💎 {text}')
-    except: pass
+    except:
+        pass
 
 async def animate_wave(message_obj, text, duration=40, interval=0.5):
-    """НОВАЯ: Волна"""
     frames_count = int(duration / interval)
     wave_chars = ['_', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
     emojis = ['🌊', '🌀', '💧', '💦']
@@ -129,13 +246,14 @@ async def animate_wave(message_obj, text, duration=40, interval=0.5):
         try:
             await message_obj.edit(f'{emojis[frame%len(emojis)]} {"".join(current)}\n{bar} {int(progress_ratio*100)}%')
             await asyncio.sleep(interval)
-        except: break
+        except:
+            break
     try:
         await message_obj.edit(f'🌊 {text}')
-    except: pass
+    except:
+        pass
 
 async def animate_rainbow(message_obj, text, duration=40, interval=0.5):
-    """НОВАЯ: Радуга"""
     frames_count = int(duration / interval)
     colors = ['🔴', '🟠', '🟡', '🟢', '🔵', '🟣', '🟤']
     for frame in range(frames_count):
@@ -145,13 +263,14 @@ async def animate_rainbow(message_obj, text, duration=40, interval=0.5):
         try:
             await message_obj.edit(f'{color_bar}\n{text}\n{bar}')
             await asyncio.sleep(interval)
-        except: break
+        except:
+            break
     try:
         await message_obj.edit(f'🌈 {text}')
-    except: pass
+    except:
+        pass
 
 async def animate_decrypt(message_obj, text, duration=40, interval=0.5):
-    """НОВАЯ: Расшифровка"""
     frames_count = int(duration / interval)
     all_chars = '!@#$%^&*()_+-=[]{}|;:,.<>?/~`0123456789'
     current = [random.choice(all_chars) if c != ' ' else ' ' for c in text]
@@ -173,13 +292,14 @@ async def animate_decrypt(message_obj, text, duration=40, interval=0.5):
         try:
             await message_obj.edit(f'{emojis[frame%len(emojis)]} {"".join(current)}\n[{bar}] Расшифровка: {int((frame/frames_count)*100)}%')
             await asyncio.sleep(interval)
-        except: break
+        except:
+            break
     try:
         await message_obj.edit(f'🔓 {text}')
-    except: pass
+    except:
+        pass
 
 async def animate_loading(message_obj, text, duration=40, interval=0.5):
-    """НОВАЯ: Загрузка"""
     frames_count = int(duration / interval)
     emojis = ['⏳', '⌛', '🔄', '⚙️', '🔧']
     words = text.split() or [text]
@@ -195,36 +315,44 @@ async def animate_loading(message_obj, text, duration=40, interval=0.5):
         try:
             await message_obj.edit(f'{emojis[frame%len(emojis)]} {spinner[frame%len(spinner)]} Загрузка...\n{" ".join(current_text)}\n{bar} {int((len(current_text)/len(words))*100)}%')
             await asyncio.sleep(interval)
-        except: break
+        except:
+            break
         if len(current_text) >= len(words):
             break
     try:
         await message_obj.edit(f'✅ {text}')
-    except: pass
+    except:
+        pass
 
 async def run_animation(message_obj, text, anim_type, duration=40, interval=0.5):
     animations = {
-        'typewriter': animate_typewriter, 'glitch': animate_glitch,
-        'matrix': animate_matrix, 'wave': animate_wave,
-        'rainbow': animate_rainbow, 'decrypt': animate_decrypt,
+        'typewriter': animate_typewriter,
+        'glitch': animate_glitch,
+        'matrix': animate_matrix,
+        'wave': animate_wave,
+        'rainbow': animate_rainbow,
+        'decrypt': animate_decrypt,
         'loading': animate_loading
     }
     if anim_type in animations:
         await animations[anim_type](message_obj, text, duration, interval)
-        # ============ ОСТАЛЬНЫЕ БАЗОВЫЕ ФУНКЦИИ ============
+
+# ============ ОСТАЛЬНЫЕ БАЗОВЫЕ ФУНКЦИИ ============
 def load_active_chats():
     if os.path.exists(ACTIVE_CHATS_FILE):
         try:
             with open(ACTIVE_CHATS_FILE, 'r') as f:
                 return json.load(f)
-        except: return {}
+        except:
+            return {}
     return {}
 
 def save_active_chats(data):
     try:
         with open(ACTIVE_CHATS_FILE, 'w') as f:
             json.dump(data, f)
-    except: pass
+    except:
+        pass
 
 def is_chat_active(chat_id):
     return str(chat_id) in load_active_chats() and load_active_chats()[str(chat_id)]
@@ -244,14 +372,16 @@ def load_messages_storage():
         try:
             with open(MESSAGES_STORAGE_DB, 'r') as f:
                 return json.load(f)
-        except: return {}
+        except:
+            return {}
     return {}
 
 def save_messages_storage(data):
     try:
         with open(MESSAGES_STORAGE_DB, 'w') as f:
             json.dump(data, f)
-    except: pass
+    except:
+        pass
 
 def store_message_immediately(chat_id, message_data):
     storage = load_messages_storage()
@@ -289,28 +419,32 @@ def load_deleted_messages_db():
         try:
             with open(DELETED_MESSAGES_DB, 'r') as f:
                 return json.load(f)
-        except: return {}
+        except:
+            return {}
     return {}
 
 def save_deleted_messages_db(data):
     try:
         with open(DELETED_MESSAGES_DB, 'w') as f:
             json.dump(data, f)
-    except: pass
+    except:
+        pass
 
 def load_saver_config():
     if os.path.exists(SAVER_CONFIG_FILE):
         try:
             with open(SAVER_CONFIG_FILE, 'r') as f:
                 return json.load(f)
-        except: pass
+        except:
+            pass
     return {'save_private': False, 'save_groups': False, 'save_channels': [], 'save_media': True, 'save_ttl': True}
 
 def save_saver_config(config):
     try:
         with open(SAVER_CONFIG_FILE, 'w') as f:
             json.dump(config, f)
-    except: pass
+    except:
+        pass
 
 def should_save_message(chat_id, is_private, is_group):
     config = load_saver_config()
@@ -382,6 +516,7 @@ async def save_media_file(message, media_folder=MEDIA_FOLDER):
         print(f'⚠️ Ошибка сохранения медиа: {e}')
         return None
 
+# Инициализация БД
 db = load_db()
 
 async def get_ai_response(messages):
@@ -446,7 +581,8 @@ async def delete_previous_command(chat_id):
         try:
             msg_ids = last_command_message[chat_id]
             await client.delete_messages(chat_id, msg_ids if isinstance(msg_ids, list) else [msg_ids])
-        except: pass
+        except:
+            pass
 
 async def register_command_message(chat_id, message_id):
     last_command_message[chat_id] = message_id
@@ -467,7 +603,8 @@ async def send_to_saved_messages(media_path, caption, message_data):
     except Exception as e:
         print(f'⚠️ Ошибка отправки: {e}')
         return False
-        # ============ ОБРАБОТЧИКИ КОМАНД (КОМПАКТНЫЕ ВЕРСИИ) ============
+
+# ============ ОБРАБОТЧИКИ КОМАНД ============
 async def handle_saver_commands(event, message_text):
     chat_id = event.chat_id
     await delete_previous_command(chat_id)
@@ -687,7 +824,6 @@ async def handle_animation_commands(event, message_text):
     return False
 
 async def handle_mute_commands(event, message_text):
-    """НОВЫЕ КОМАНДЫ ЗАГЛУШКИ"""
     chat_id = event.chat_id
     await delete_previous_command(chat_id)
     
@@ -752,18 +888,16 @@ async def handle_mute_commands(event, message_text):
         return True
     
     return False
-    # ============ ОБРАБОТЧИКИ СОБЫТИЙ ============
+
+# ============ ОБРАБОТЧИКИ СОБЫТИЙ ============
 @client.on(events.NewMessage(incoming=True, from_users=None))
 async def immediate_save_handler(event):
-    """НЕМЕДЛЕННОЕ сохранение + АВТОУДАЛЕНИЕ заглушенных"""
     try:
         chat_id, message_id, sender_id = event.chat_id, event.message.id, event.sender_id
         
-        # Пропускаем свои
         if OWNER_ID and sender_id == OWNER_ID:
             return
         
-        # НОВОЕ: Удаляем сообщения заглушенных
         if is_user_muted(chat_id, sender_id):
             print(f'🔇 Заглушенный {sender_id} - удаляем MSG {message_id}')
             try:
@@ -773,7 +907,6 @@ async def immediate_save_handler(event):
                 print(f'⚠️ Ошибка удаления: {e}')
             return
         
-        # Сохраняем как обычно
         is_private, is_group = event.is_private, event.is_group
         if not should_save_message(chat_id, is_private, is_group):
             return
@@ -807,7 +940,6 @@ async def immediate_save_handler(event):
 
 @client.on(events.MessageDeleted)
 async def deleted_message_handler(event):
-    """Обработка удаленных"""
     try:
         chat_id, deleted_ids = event.chat_id, event.deleted_ids
         print(f'🗑️ Удалено {len(deleted_ids)} сообщений')
@@ -824,7 +956,6 @@ async def deleted_message_handler(event):
 
 @client.on(events.NewMessage(incoming=True))
 async def incoming_handler(event):
-    """AI ответы"""
     try:
         chat_id = event.chat_id
         if not is_chat_active(chat_id):
@@ -849,27 +980,22 @@ async def incoming_handler(event):
 
 @client.on(events.NewMessage(outgoing=True))
 async def outgoing_handler(event):
-    """Ваши сообщения"""
     try:
         chat_id = event.chat_id
         message_text = event.message.message or ''
         
-        # ПРИОРИТЕТ 1: Команды saver
         if message_text.lower().startswith('.saver'):
             if await handle_saver_commands(event, message_text):
                 return
         
-        # ПРИОРИТЕТ 2: Команды анимаций
         if message_text.lower().startswith('.anim'):
             if await handle_animation_commands(event, message_text):
                 return
         
-        # НОВОЕ: Команды заглушки
         if message_text.lower().startswith('.замолчи') or message_text.lower().startswith('.говори'):
             if await handle_mute_commands(event, message_text):
                 return
         
-        # AI команды
         if ACTIVATION_COMMAND.lower() in message_text.lower():
             await delete_previous_command(chat_id)
             activate_chat(chat_id)
@@ -895,7 +1021,6 @@ async def outgoing_handler(event):
                 await register_command_message(chat_id, msg.id)
             return
         
-        # Автоматическая анимация
         settings = get_animation_settings(chat_id)
         if settings['mode'] and message_text.strip():
             if not message_text.startswith('.') and not message_text.lower().startswith('ai '):
@@ -933,7 +1058,7 @@ async def main():
         print('⚡ Мгновенное сохранение удаленных')
         print('🎬 7 типов анимаций (typewriter, glitch, matrix, wave, rainbow, decrypt, loading)')
         print('⏱️ Настройка длительности и интервала')
-        print('🔇 НОВОЕ: Команды .замолчи/.говори для автоудаления')
+        print('🔇 Команды .замолчи/.говори для автоудаления')
         print('\n📝 Команды:')
         print('   .saver help - управление сохранением')
         print('   .anim help - управление анимациями')
