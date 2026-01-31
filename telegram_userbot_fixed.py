@@ -609,26 +609,25 @@ async def delete_previous_command(chat_id):
 async def register_command_message(chat_id, message_id):
     last_command_message[chat_id] = message_id
 
-async def forward_to_saved(original_message, caption_prefix=""):
-    """Пересылка медиа в избранное"""
+async def forward_to_saved(media_path, caption_text=""):
+    """Пересылка медиа в избранное из файла"""
     try:
-        # Получаем "Избранное" (Saved Messages)
-        me = await client.get_me()
+        if not media_path or not os.path.exists(media_path):
+            print(f'⚠️ Файл не найден: {media_path}')
+            return False
         
-        caption = f"{caption_prefix}\n" if caption_prefix else ""
-        if original_message.text:
-            caption += original_message.text
-        
-        # Пересылаем оригинальное сообщение в избранное
-        await client.send_message(
+        # Отправляем файл в избранное
+        await client.send_file(
             'me',
-            caption or "🗑️ Удалённое медиа",
-            file=original_message.media
+            media_path,
+            caption=caption_text
         )
-        print(f'📤 Переслано в избранное: {caption_prefix}')
+        print(f'📤 Переслано в избранное: {os.path.basename(media_path)}')
         return True
     except Exception as e:
         print(f'⚠️ Ошибка пересылки в избранное: {e}')
+        import traceback
+        traceback.print_exc()
         return False
 
 # ============ ОБРАБОТЧИКИ КОМАНД ============
@@ -1197,15 +1196,13 @@ async def immediate_save_handler(event):
         if hasattr(sender, 'username') and sender.username:
             sender_name += f' (@{sender.username})'
         
-        # ИСПРАВЛЕНИЕ: правильная проверка скоротечных медиа
+        # Проверка на скоротечное медиа
         is_ttl_media = False
         if hasattr(event.message, 'media'):
-            # Проверяем фото
             if hasattr(event.message.media, 'photo') and event.message.media.photo:
                 if hasattr(event.message.media, 'ttl_seconds') and event.message.media.ttl_seconds:
                     is_ttl_media = True
                     print(f'⏱️ Обнаружено скоротечное ФОТО! TTL: {event.message.media.ttl_seconds}с')
-            # Проверяем документ (может быть видео)
             elif hasattr(event.message.media, 'document') and event.message.media.document:
                 if hasattr(event.message.media, 'ttl_seconds') and event.message.media.ttl_seconds:
                     is_ttl_media = True
@@ -1231,19 +1228,15 @@ async def immediate_save_handler(event):
             'has_document': bool(event.message.document),
             'has_voice': bool(event.message.voice),
             'is_ttl': is_ttl_media,
-            'media_path': None,
-            'original_message': None  # Сохраним ссылку на оригинальное сообщение
+            'media_path': None
         }
         
         # Сохраняем медиа если нужно
         if save_this_media and (event.message.photo or event.message.video or 
                                 event.message.document or event.message.voice or is_ttl_media):
-            # Для скоротечных медиа ОБЯЗАТЕЛЬНО сохраняем файл
             if is_ttl_media:
                 print(f'📥 Скачиваем скоротечное медиа...')
             message_data['media_path'] = await save_media_file(event.message)
-            # Сохраняем само сообщение для пересылки
-            message_data['original_message'] = event.message
         
         store_message_immediately(chat_id, message_data)
     except Exception as e:
@@ -1262,21 +1255,11 @@ async def deleted_message_handler(event):
                 real_chat_id = message_data.get('chat_id')
                 message_data['deleted_at'] = datetime.now().isoformat()
                 
-                # Получаем оригинальное сообщение из storage
-                storage = load_messages_storage()
-                original_msg = None
-                for chat_key, messages in storage.items():
-                    for msg in messages:
-                        if msg.get('message_id') == message_id:
-                            original_msg = msg.get('original_message')
-                            break
-                    if original_msg:
-                        break
-                
-                # Пересылаем медиа в избранное
+                # Пересылаем медиа в избранное ИЗ ФАЙЛА
                 config = load_saver_config()
                 should_forward = False
                 caption_prefix = ""
+                media_path = message_data.get('media_path')
                 
                 if message_data.get('has_photo') and config.get('save_media', True):
                     should_forward = True
@@ -1291,10 +1274,15 @@ async def deleted_message_handler(event):
                     should_forward = True
                     caption_prefix = "⏱️ Скоротечное медиа"
                 
-                if should_forward and original_msg:
+                if should_forward and media_path:
                     sender_name = message_data.get('sender_name', 'Неизвестно')
+                    msg_text = message_data.get('text', '')
                     full_caption = f"{caption_prefix}\n👤 От: {sender_name}\n🗑️ Удалено: {message_data.get('deleted_at', '')[:16]}"
-                    await forward_to_saved(original_msg, full_caption)
+                    if msg_text:
+                        full_caption += f"\n📝 Текст: {msg_text[:100]}"
+                    
+                    print(f'📤 Пересылаем в избранное: {media_path}')
+                    await forward_to_saved(media_path, full_caption)
                 
                 add_deleted_message(real_chat_id, message_data)
     except Exception as e:
@@ -1417,7 +1405,7 @@ async def main():
         print('🎬 2 типа анимаций (rainbow, caps)')
         print('🔇 Заглушка пользователей')
         print('🗑️ Тонкая очистка по типам')
-        print('📤 Автопересылка медиа в избранное')
+        print('📤 Автопересылка медиа в избранное ИЗ ФАЙЛОВ')
         print('⏱️ Сохранение скоротечных медиа')
         print('\n📝 ОСНОВНЫЕ КОМАНДЫ:')
         print('   .saver help   - 📚 Полное меню')
@@ -1428,11 +1416,9 @@ async def main():
         print('   .anim help    - 🎞️ Анимации')
         print('   .замолчи      - 🔇 Заглушить')
         print('   .del          - 🗑️ Удалить меню')
-        print('\n💡 НОВАЯ ФУНКЦИЯ:')
-        print('   При удалении фото/видео/ГС автоматически')
-        print('   пересылаются в "Избранное" с подписью!')
-        print('   Скоротечные фото сохраняются при включенной')
-        print('   опции .saver ttl on')
+        print('\n💡 ИСПРАВЛЕНО:')
+        print('   Теперь медиа пересылается ИЗ СОХРАНЕННОГО ФАЙЛА')
+        print('   Фото/видео/ГС автоматически попадают в избранное!')
         print('\n🎧 Слушаю...\n')
         
         await client.run_until_disconnected()
