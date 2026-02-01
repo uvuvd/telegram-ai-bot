@@ -2,50 +2,46 @@ import asyncio
 import json
 import os
 import sys
-import random
-import string
+import base64
 from datetime import datetime, timedelta
 from pathlib import Path
 import aiohttp
 from telethon import TelegramClient, events
 from telethon.errors import RPCError
-from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, InputPeerSelf
 
 # ============ КОНФИГУРАЦИЯ ============
 API_ID = int(os.environ.get('API_ID', '39678712'))
 API_HASH = os.environ.get('API_HASH', '3089ac53d532e75deb5dd641e4863d49')
 PHONE = os.environ.get('PHONE', '+919036205120')
 
-OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
-OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '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')
-MODEL_NAME = os.environ.get('MODEL_NAME', 'google/gemini-3-flash-preview')
-
-ACTIVATION_COMMAND = 'Ai Edem'
+ONLYSQ_API_URL = 'https://api.onlysq.ru/v1/chat/completions'
+ONLYSQ_API_KEY = os.environ.get('ONLYSQ_API_KEY', '')
+MODEL_NAME = 'gemini-3-flash'
 
 DB_FILE = 'messages.json'
-ACTIVE_CHATS_FILE = 'active_chats.json'
 DELETED_MESSAGES_DB = 'deleted_messages.json'
 SAVER_CONFIG_FILE = 'saver_config.json'
 MESSAGES_STORAGE_DB = 'messages_storage.json'
 ANIMATION_CONFIG_FILE = 'animation_config.json'
 MUTE_CONFIG_FILE = 'mute_config.json'
-TEMP_SELECTION_FILE = 'temp_selection.json'
+AI_CONFIG_FILE = 'ai_config.json'
+AI_CHATS_CONFIG_FILE = 'ai_chats_config.json'
 
 SESSION_NAME = 'railway_session'
 MEDIA_FOLDER = 'saved_media'
 OWNER_ID = None
 
 last_command_message = {}
-COMMAND_PREFIXES = ['.saver', '.deleted', 'ai stop', 'ai clear', 'ai edem', '.anim', '.замолчи', '.говори', '.del']
+COMMAND_PREFIXES = ['.saver', '.deleted', '.anim', '.замолчи', '.говори', '.del', '.ии', '.конфиг']
 
-# Глобальное состояние для выбора пользователя
 user_selection_state = {}
+db = {}
 
 # ============ БАЗОВЫЕ ФУНКЦИИ БД ============
 def load_db():
     if os.path.exists(DB_FILE):
         try:
-            with open(DB_FILE, 'r') as f:
+            with open(DB_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except:
             return {}
@@ -53,15 +49,157 @@ def load_db():
 
 def save_db(data):
     try:
-        with open(DB_FILE, 'w') as f:
-            json.dump(data, f)
+        with open(DB_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
     except:
         pass
 
+# ============ AI КОНФИГУРАЦИЯ ============
+def load_ai_config():
+    if os.path.exists(AI_CONFIG_FILE):
+        try:
+            with open(AI_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            pass
+    return {
+        'system_prompt': 'ты дружелюбный помощник. отвечай естественно, как обычный человек в переписке. используй строчные буквы, без формальностей. будь кратким и по делу.',
+        'temperature': 0.8,
+        'max_tokens': 1024,
+        'style': 'дружелюбный',
+        'description': 'Стандартная конфигурация'
+    }
+
+def save_ai_config(config):
+    try:
+        with open(AI_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+def load_ai_chats_config():
+    if os.path.exists(AI_CHATS_CONFIG_FILE):
+        try:
+            with open(AI_CHATS_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            pass
+    return {
+        'enabled_chats': [],
+        'global_mode': False,
+        'private_only': False,
+        'groups_only': False,
+    }
+
+def save_ai_chats_config(config):
+    try:
+        with open(AI_CHATS_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+def should_ai_respond(chat_id, is_private, is_group):
+    config = load_ai_chats_config()
+    
+    if config['global_mode']:
+        return True
+    
+    if config['private_only'] and is_private:
+        return True
+    
+    if config['groups_only'] and is_group:
+        return True
+    
+    if str(chat_id) in config['enabled_chats']:
+        return True
+    
+    return False
+
+
+# ============ MUTE ФУНКЦИИ ============
+def load_mute_config():
+    if os.path.exists(MUTE_CONFIG_FILE):
+        try:
+            with open(MUTE_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_mute_config(config):
+    try:
+        with open(MUTE_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+def mute_user(chat_id, user_id, user_name):
+    config = load_mute_config()
+    chat_key = str(chat_id)
+    if chat_key not in config:
+        config[chat_key] = {}
+    config[chat_key][str(user_id)] = {
+        'user_name': user_name,
+        'muted_at': datetime.now().isoformat()
+    }
+    save_mute_config(config)
+
+def mute_user_by_id(user_id, user_name="Неизвестно"):
+    config = load_mute_config()
+    if 'global' not in config:
+        config['global'] = {}
+    config['global'][str(user_id)] = {
+        'user_name': user_name,
+        'muted_at': datetime.now().isoformat()
+    }
+    save_mute_config(config)
+
+def unmute_user(chat_id, user_id):
+    config = load_mute_config()
+    chat_key = str(chat_id)
+    if chat_key in config and str(user_id) in config[chat_key]:
+        user_info = config[chat_key].pop(str(user_id))
+        save_mute_config(config)
+        return user_info
+    return None
+
+def unmute_user_by_id(user_id):
+    config = load_mute_config()
+    if 'global' in config and str(user_id) in config['global']:
+        user_info = config['global'].pop(str(user_id))
+        save_mute_config(config)
+        return user_info
+    return None
+
+def is_user_muted(chat_id, user_id):
+    config = load_mute_config()
+    if 'global' in config and str(user_id) in config['global']:
+        return True
+    chat_key = str(chat_id)
+    return chat_key in config and str(user_id) in config[chat_key]
+
+def get_all_muted_users():
+    config = load_mute_config()
+    all_muted = {}
+    
+    if 'global' in config:
+        for uid, info in config['global'].items():
+            all_muted[uid] = {**info, 'scope': 'глобально'}
+    
+    for chat_id, users in config.items():
+        if chat_id == 'global':
+            continue
+        for uid, info in users.items():
+            if uid not in all_muted:
+                all_muted[uid] = {**info, 'scope': f'чат {chat_id}'}
+    
+    return all_muted
+
+# ============ АНИМАЦИОННЫЕ ФУНКЦИИ ============
 def load_animation_config():
     if os.path.exists(ANIMATION_CONFIG_FILE):
         try:
-            with open(ANIMATION_CONFIG_FILE, 'r') as f:
+            with open(ANIMATION_CONFIG_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except:
             return {}
@@ -69,8 +207,8 @@ def load_animation_config():
 
 def save_animation_config(config):
     try:
-        with open(ANIMATION_CONFIG_FILE, 'w') as f:
-            json.dump(config, f)
+        with open(ANIMATION_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
     except:
         pass
 
@@ -94,53 +232,6 @@ def set_animation_mode(chat_id, mode):
     config[chat_key]['mode'] = mode
     save_animation_config(config)
 
-def load_mute_config():
-    if os.path.exists(MUTE_CONFIG_FILE):
-        try:
-            with open(MUTE_CONFIG_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_mute_config(config):
-    try:
-        with open(MUTE_CONFIG_FILE, 'w') as f:
-            json.dump(config, f)
-    except:
-        pass
-
-def mute_user(chat_id, user_id, user_name):
-    config = load_mute_config()
-    chat_key = str(chat_id)
-    if chat_key not in config:
-        config[chat_key] = {}
-    config[chat_key][str(user_id)] = {
-        'user_name': user_name,
-        'muted_at': datetime.now().isoformat()
-    }
-    save_mute_config(config)
-
-def unmute_user(chat_id, user_id):
-    config = load_mute_config()
-    chat_key = str(chat_id)
-    if chat_key in config and str(user_id) in config[chat_key]:
-        user_info = config[chat_key].pop(str(user_id))
-        save_mute_config(config)
-        return user_info
-    return None
-
-def is_user_muted(chat_id, user_id):
-    config = load_mute_config()
-    chat_key = str(chat_id)
-    return chat_key in config and str(user_id) in config[chat_key]
-
-def get_muted_users(chat_id):
-    config = load_mute_config()
-    chat_key = str(chat_id)
-    return config.get(chat_key, {})
-
-# ============ АНИМАЦИОННЫЕ ФУНКЦИИ ============
 async def animate_rainbow(message_obj, text, duration=40, interval=0.5):
     frames_count = int(duration / interval)
     colors = ['🔴', '🟠', '🟡', '🟢', '🔵', '🟣', '🟤']
@@ -159,23 +250,17 @@ async def animate_rainbow(message_obj, text, duration=40, interval=0.5):
         pass
 
 async def animate_caps(message_obj, text, duration=40, interval=0.5):
-    """Анимация чередования регистра: обычный -> ПеРеМеНнЫй -> оБрАтНыЙ"""
     frames_count = int(duration / interval)
-    
-    # Первый кадр - обычный текст
     try:
         await message_obj.edit(text)
         await asyncio.sleep(interval)
     except:
         pass
     
-    # Чередование
     for frame in range(1, frames_count - 1):
         if frame % 2 == 1:
-            # Нечетные символы большие
             new_text = ''.join([c.upper() if i % 2 == 1 else c.lower() for i, c in enumerate(text)])
         else:
-            # Четные символы большие
             new_text = ''.join([c.upper() if i % 2 == 0 else c.lower() for i, c in enumerate(text)])
         try:
             await message_obj.edit(new_text)
@@ -183,7 +268,6 @@ async def animate_caps(message_obj, text, duration=40, interval=0.5):
         except:
             break
     
-    # Последний кадр - обычный текст
     try:
         await message_obj.edit(text)
     except:
@@ -197,40 +281,12 @@ async def run_animation(message_obj, text, anim_type, duration=40, interval=0.5)
     if anim_type in animations:
         await animations[anim_type](message_obj, text, duration, interval)
 
-# ============ ОСТАЛЬНЫЕ БАЗОВЫЕ ФУНКЦИИ ============
-def load_active_chats():
-    if os.path.exists(ACTIVE_CHATS_FILE):
-        try:
-            with open(ACTIVE_CHATS_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
 
-def save_active_chats(data):
-    try:
-        with open(ACTIVE_CHATS_FILE, 'w') as f:
-            json.dump(data, f)
-    except:
-        pass
-
-def is_chat_active(chat_id):
-    return str(chat_id) in load_active_chats() and load_active_chats()[str(chat_id)]
-
-def activate_chat(chat_id):
-    chats = load_active_chats()
-    chats[str(chat_id)] = True
-    save_active_chats(chats)
-
-def deactivate_chat(chat_id):
-    chats = load_active_chats()
-    chats[str(chat_id)] = False
-    save_active_chats(chats)
-
+# ============ SAVER ФУНКЦИИ ============
 def load_messages_storage():
     if os.path.exists(MESSAGES_STORAGE_DB):
         try:
-            with open(MESSAGES_STORAGE_DB, 'r') as f:
+            with open(MESSAGES_STORAGE_DB, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except:
             return {}
@@ -238,8 +294,8 @@ def load_messages_storage():
 
 def save_messages_storage(data):
     try:
-        with open(MESSAGES_STORAGE_DB, 'w') as f:
-            json.dump(data, f)
+        with open(MESSAGES_STORAGE_DB, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
     except:
         pass
 
@@ -277,7 +333,7 @@ def is_command_message(text):
 def load_deleted_messages_db():
     if os.path.exists(DELETED_MESSAGES_DB):
         try:
-            with open(DELETED_MESSAGES_DB, 'r') as f:
+            with open(DELETED_MESSAGES_DB, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except:
             return {}
@@ -285,17 +341,16 @@ def load_deleted_messages_db():
 
 def save_deleted_messages_db(data):
     try:
-        with open(DELETED_MESSAGES_DB, 'w') as f:
-            json.dump(data, f)
+        with open(DELETED_MESSAGES_DB, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
     except:
         pass
 
 def load_saver_config():
     if os.path.exists(SAVER_CONFIG_FILE):
         try:
-            with open(SAVER_CONFIG_FILE, 'r') as f:
+            with open(SAVER_CONFIG_FILE, 'r', encoding='utf-8') as f:
                 config = json.load(f)
-                # Добавляем новые параметры если их нет
                 if 'save_text' not in config:
                     config['save_text'] = True
                 if 'save_voice' not in config:
@@ -318,8 +373,8 @@ def load_saver_config():
 
 def save_saver_config(config):
     try:
-        with open(SAVER_CONFIG_FILE, 'w') as f:
-            json.dump(config, f)
+        with open(SAVER_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
     except:
         pass
 
@@ -335,162 +390,41 @@ def should_save_message(chat_id, is_private, is_group):
     return False
 
 def add_deleted_message(chat_id, message_data):
-    # Не сохраняем если пользователь заглушен
     if is_user_muted(chat_id, message_data.get('sender_id')):
         return
         
     if is_command_message(message_data.get('text', '')):
         return
     
-    # Проверяем настройки сохранения по типам
     config = load_saver_config()
     
-    # Проверяем текст
     if not config.get('save_text', True):
         if not (message_data.get('has_photo') or message_data.get('has_video') or 
                 message_data.get('has_document') or message_data.get('has_voice')):
             return
     
-    # Проверяем фото
     if not config.get('save_media', True) and message_data.get('has_photo'):
         return
     
-    # Проверяем видео
     if not config.get('save_media', True) and message_data.get('has_video'):
         return
     
-    # Проверяем документы
     if not config.get('save_media', True) and message_data.get('has_document'):
         return
     
-    # Проверяем голосовые
     if not config.get('save_voice', True) and message_data.get('has_voice'):
         return
     
-    db = load_deleted_messages_db()
+    db_del = load_deleted_messages_db()
     chat_key = str(chat_id)
-    if chat_key not in db:
-        db[chat_key] = []
-    db[chat_key].append(message_data)
-    if len(db[chat_key]) > 1000:
-        db[chat_key] = db[chat_key][-1000:]
-    save_deleted_messages_db(db)
-
-def get_all_senders_with_deleted():
-    """Получить всех отправителей с удаленными сообщениями"""
-    db = load_deleted_messages_db()
-    sender_stats = {}
-    
-    for chat_key, messages in db.items():
-        for msg in messages:
-            sender_id = msg.get('sender_id')
-            if sender_id is None or sender_id == OWNER_ID:
-                continue
-            sender_name = msg.get('sender_name', 'Неизвестно')
-            if sender_id not in sender_stats:
-                sender_stats[sender_id] = {'name': sender_name, 'count': 0}
-            sender_stats[sender_id]['count'] += 1
-    
-    sorted_senders = sorted(sender_stats.items(), key=lambda x: x[1]['count'], reverse=True)
-    return [(sid, data['name'], data['count']) for sid, data in sorted_senders]
-
-def get_deleted_messages(chat_id=None, limit=None, sender_id=None, message_type=None):
-    """Получить удаленные сообщения с фильтрацией"""
-    db = load_deleted_messages_db()
-    messages = []
-    
-    chat_keys = [str(chat_id)] if chat_id is not None else db.keys()
-    
-    for ck in chat_keys:
-        if ck not in db:
-            continue
-        for msg in db[ck]:
-            if is_command_message(msg.get('text', '')):
-                continue
-            if sender_id is not None and msg.get('sender_id') != sender_id:
-                continue
-                
-            if message_type == 'photo' and not msg.get('has_photo'):
-                continue
-            if message_type == 'video' and not msg.get('has_video'):
-                continue
-            if message_type == 'document' and not msg.get('has_document'):
-                continue
-            if message_type == 'voice' and not msg.get('has_voice'):
-                continue
-            if message_type == 'text' and (msg.get('has_photo') or msg.get('has_video') or 
-                                          msg.get('has_document') or msg.get('has_voice')):
-                continue
-                
-            messages.append(msg)
-    
-    messages.sort(key=lambda x: x.get('deleted_at', ''), reverse=True)
-    if limit:
-        messages = messages[:limit]
-    return messages
-
-def clear_deleted_messages_by_type(chat_id, message_type, target_chat_id=None, sender_id=None):
-    """Очистить удаленные сообщения по типу"""
-    db = load_deleted_messages_db()
-    
-    if message_type == 'all_global':
-        # Очистить ВСЮ базу
-        db.clear()
-        save_deleted_messages_db(db)
-        return True
-    
-    if sender_id is not None:
-        # Очистить сообщения конкретного пользователя
-        for chat_key in db:
-            db[chat_key] = [m for m in db[chat_key] if m.get('sender_id') != sender_id]
-        save_deleted_messages_db(db)
-        return True
-    
-    target = str(target_chat_id) if target_chat_id is not None else str(chat_id)
-    
-    if target not in db:
-        return False
-    
-    messages = db[target]
-    
-    if message_type == 'all':
-        db[target] = []
-    elif message_type == 'photo':
-        db[target] = [m for m in messages if not m.get('has_photo')]
-    elif message_type == 'video':
-        db[target] = [m for m in messages if not m.get('has_video')]
-    elif message_type == 'document':
-        db[target] = [m for m in messages if not m.get('has_document')]
-    elif message_type == 'voice':
-        db[target] = [m for m in messages if not m.get('has_voice')]
-    elif message_type == 'text':
-        db[target] = [m for m in messages if (m.get('has_photo') or m.get('has_video') or 
-                                              m.get('has_document') or m.get('has_voice'))]
-    
-    save_deleted_messages_db(db)
-    return True
-
-def save_temp_selection(chat_id, users_list):
-    """Сохранить временный список пользователей"""
-    chat_key = str(chat_id)
-    if chat_key not in user_selection_state:
-        user_selection_state[chat_key] = {}
-    user_selection_state[chat_key]['users'] = users_list
-    user_selection_state[chat_key]['timestamp'] = datetime.now()
-
-def load_temp_selection(chat_id):
-    """Загрузить временный выбор"""
-    chat_key = str(chat_id)
-    if chat_key not in user_selection_state:
-        return None
-    data = user_selection_state[chat_key]
-    if datetime.now() > data['timestamp'] + timedelta(minutes=5):
-        del user_selection_state[chat_key]
-        return None
-    return data['users']
+    if chat_key not in db_del:
+        db_del[chat_key] = []
+    db_del[chat_key].append(message_data)
+    if len(db_del[chat_key]) > 1000:
+        db_del[chat_key] = db_del[chat_key][-1000:]
+    save_deleted_messages_db(db_del)
 
 async def save_media_file(message, media_folder=MEDIA_FOLDER):
-    """Сохранение медиа файлов"""
     try:
         Path(media_folder).mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -522,69 +456,135 @@ async def save_media_file(message, media_folder=MEDIA_FOLDER):
         print(f'⚠️ Ошибка сохранения медиа: {e}')
         return None
 
-# Инициализация БД
-db = load_db()
-
-if os.path.exists(TEMP_SELECTION_FILE):
+async def forward_to_saved(media_path, caption_text=""):
     try:
-        with open(TEMP_SELECTION_FILE, 'r') as f:
-            loaded_state = json.load(f)
-            for k, v in loaded_state.items():
-                if 'timestamp' in v and isinstance(v['timestamp'], str):
-                    try:
-                        v['timestamp'] = datetime.fromisoformat(v['timestamp'])
-                    except:
-                        v['timestamp'] = datetime.now()
-            user_selection_state = loaded_state
-    except:
-        user_selection_state = {}
-else:
-    user_selection_state = {}
+        if not media_path or not os.path.exists(media_path):
+            print(f'⚠️ Файл не найден: {media_path}')
+            return False
+        
+        await client.send_file(
+            'me',
+            media_path,
+            caption=caption_text
+        )
+        print(f'📤 Переслано в избранное: {os.path.basename(media_path)}')
+        return True
+    except Exception as e:
+        print(f'⚠️ Ошибка пересылки: {e}')
+        return False
 
-async def get_ai_response(messages):
+# ============ ИИ ФУНКЦИИ ============
+async def file_to_base64(filepath):
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+        with open(filepath, 'rb') as f:
+            return base64.b64encode(f.read()).decode('utf-8')
+    except Exception as e:
+        print(f'❌ Ошибка конвертации в base64: {e}')
+        return None
+
+async def get_ai_response(messages, include_voice=None, include_image=None):
+    try:
+        config = load_ai_config()
+        
+        full_messages = [
+            {'role': 'system', 'content': config.get('system_prompt', 'ты помощник')}
+        ] + messages
+        
+        if include_voice or include_image:
+            last_msg = full_messages[-1]
+            content_parts = []
+            
+            if last_msg.get('content'):
+                content_parts.append({
+                    'type': 'text',
+                    'text': last_msg['content']
+                })
+            
+            if include_image:
+                image_b64 = await file_to_base64(include_image)
+                if image_b64:
+                    ext = include_image.split('.')[-1].lower()
+                    mime_map = {
+                        'jpg': 'image/jpeg',
+                        'jpeg': 'image/jpeg',
+                        'png': 'image/png',
+                        'gif': 'image/gif',
+                        'webp': 'image/webp'
+                    }
+                    mime_type = mime_map.get(ext, 'image/jpeg')
+                    
+                    content_parts.append({
+                        'type': 'image_url',
+                        'image_url': {
+                            'url': f'data:{mime_type};base64,{image_b64}'
+                        }
+                    })
+            
+            if include_voice:
+                audio_b64 = await file_to_base64(include_voice)
+                if audio_b64:
+                    content_parts.append({
+                        'type': 'input_audio',
+                        'input_audio': {
+                            'data': audio_b64,
+                            'format': 'ogg'
+                        }
+                    })
+            
+            if content_parts:
+                full_messages[-1]['content'] = content_parts
+        
+        ssl_context = aiohttp.TCPConnector(ssl=False)
+        
+        async with aiohttp.ClientSession(connector=ssl_context, timeout=aiohttp.ClientTimeout(total=120)) as session:
             payload = {
                 'model': MODEL_NAME,
-                'messages': messages,
-                'temperature': 0.7,
-                'max_tokens': 2048,
-                'reasoning': {'enabled': True}
+                'messages': full_messages,
+                'temperature': config.get('temperature', 0.8),
+                'max_tokens': config.get('max_tokens', 1024),
             }
+            
             headers = {
-                'Authorization': f'Bearer {OPENROUTER_API_KEY}',
-                'Content-Type': 'application/json',
-                'HTTP-Referer': 'https://github.com/telegram-bot',
-                'X-Title': 'Telegram AI Bot'
+                'Content-Type': 'application/json'
             }
-            async with session.post(OPENROUTER_API_URL, json=payload, headers=headers) as resp:
+            
+            if ONLYSQ_API_KEY:
+                headers['Authorization'] = f'Bearer {ONLYSQ_API_KEY}'
+            
+            async with session.post(ONLYSQ_API_URL, json=payload, headers=headers) as resp:
                 if resp.status == 200:
                     result = json.loads(await resp.text())
                     message = result.get('choices', [{}])[0].get('message', {})
-                    content = message.get('content', '').strip() or 'Не понял'
-                    return {'content': content, 'reasoning_details': message.get('reasoning_details')}
+                    content = message.get('content', '').strip()
+                    
+                    if not content:
+                        content = 'хм...'
+                    
+                    return {'content': content}
                 else:
-                    return {'content': f'Ошибка API ({resp.status})', 'reasoning_details': None}
+                    error_text = await resp.text()
+                    print(f'❌ API ошибка {resp.status}: {error_text}')
+                    return {'content': 'не могу ответить сейчас...'}
     except Exception as e:
-        print(f'❌ API ошибка: {e}')
-        return {'content': 'Не смог сформировать ответ', 'reasoning_details': None}
+        print(f'❌ Ошибка API: {e}')
+        import traceback
+        traceback.print_exc()
+        return {'content': 'что-то пошло не так...'}
 
 def get_chat_history(chat_id, limit=10):
     chat_key = str(chat_id)
     if chat_key not in db:
         db[chat_key] = []
-    filtered = [msg for msg in db[chat_key] if not (msg.get('role') == 'assistant' and 'Ошибка' in msg.get('content', ''))]
+    filtered = [msg for msg in db[chat_key] if not (msg.get('role') == 'assistant' and 'ошибка' in msg.get('content', '').lower())]
     return filtered[-limit:]
 
-def save_message(chat_id, role, content, reasoning_details=None):
+def save_message(chat_id, role, content):
     chat_key = str(chat_id)
     if chat_key not in db:
         db[chat_key] = []
-    if role == 'assistant' and 'Ошибка' in content:
+    if role == 'assistant' and 'ошибка' in content.lower():
         return
     message = {'role': role, 'content': content}
-    if role == 'assistant' and reasoning_details:
-        message['reasoning_details'] = reasoning_details
     db[chat_key].append(message)
     if len(db[chat_key]) > 100:
         db[chat_key] = db[chat_key][-100:]
@@ -609,333 +609,124 @@ async def delete_previous_command(chat_id):
 async def register_command_message(chat_id, message_id):
     last_command_message[chat_id] = message_id
 
-async def forward_to_saved(media_path, caption_text=""):
-    """Пересылка медиа в избранное из файла"""
-    try:
-        if not media_path or not os.path.exists(media_path):
-            print(f'⚠️ Файл не найден: {media_path}')
-            return False
-        
-        # Отправляем файл в избранное
-        await client.send_file(
-            'me',
-            media_path,
-            caption=caption_text
-        )
-        print(f'📤 Переслано в избранное: {os.path.basename(media_path)}')
-        return True
-    except Exception as e:
-        print(f'⚠️ Ошибка пересылки в избранное: {e}')
-        import traceback
-        traceback.print_exc()
-        return False
 
 # ============ ОБРАБОТЧИКИ КОМАНД ============
-async def handle_saver_commands(event, message_text):
+
+async def handle_ai_config_commands(event, message_text):
     chat_id = event.chat_id
     await delete_previous_command(chat_id)
     
-    if message_text.lower() == '.saver help':
-        help_text = '''🔧 **ПАНЕЛЬ УПРАВЛЕНИЯ СОХРАНЕНИЕМ СООБЩЕНИЙ**
+    if message_text.lower() in ['.конфиг', '.конфиг помощь']:
+        help_text = '''⚙️ **НАСТРОЙКА ЛИЧНОСТИ ИИ**
 
-💡 *Этот бот сохраняет удалённые сообщения в чатах, где включена функция сохранения.*
+📋 **ПРОСМОТР:**
+• `.конфиг показать` - текущая
+• `.конфиг список` - все сохраненные
 
-📋 **ОСНОВНЫЕ НАСТРОЙКИ**
-┣‣ `.saver status` - 📊 Показать текущий статус
-┣‣ `.saver private on/off` - 🔓 Личные чаты
-┣‣ `.saver groups on/off` - 👥 Группы
-┣‣ `.saver add` - ➕ Добавить этот чат
-┣‣ `.saver remove` - ➖ Удалить этот чат
+📝 **ЗАГРУЗКА:**
+• `.конфиг загрузить` (ответ на JSON)
 
-🗑️ **УПРАВЛЕНИЕ УДАЛЁННЫМИ**
-┣‣ `.saver show` - 📄 Последние 10 удалённых
-┣‣ `.saver all` - 👥 Все пользователи
-┣‣ `.saver user <номер>` - 📂 Все сообщения
+🗑️ **УПРАВЛЕНИЕ:**
+• `.конфиг сброс` - стандартная
+• `.конфиг удалить` - удалить
 
-🧹 **ОЧИСТКА**
-┣‣ `.saver clear all` - 🗑️ Вся база
-┣‣ `.saver clear text` - 📝 Только текст
-┣‣ `.saver clear photo` - 🖼️ Только фото
-┣‣ `.saver clear voice` - 🎤 Только ГС
-┣‣ `.saver clear user <номер>` - 👤 Пользователя
-
-⚙️ **ТИПЫ СОХРАНЕНИЯ**
-┣‣ `.saver text on/off` - 📝 Текст
-┣‣ `.saver media on/off` - 🖼️ Медиа
-┣‣ `.saver voice on/off` - 🎤 Голосовые
-┣‣ `.saver ttl on/off` - ⏱️ Скоротечные
-
-💡 *Фото, голосовые и скоротечные медиа при удалении автоматически пересылаются в избранное!*
-
-🎬 **ДОПОЛНИТЕЛЬНО**
-┣‣ `.anim help` - 🎞️ Анимации
-┣‣ `.замолчи` - 🔇 Заглушить
-┣‣ `.del` - 🗑️ Удалить меню'''
+**Пример JSON:**
+```json
+{
+  "system_prompt": "ты саркастичный бот",
+  "temperature": 0.9,
+  "max_tokens": 2048,
+  "style": "саркастичный",
+  "description": "Саркастичный стиль"
+}
+```'''
         msg = await event.respond(help_text)
         await event.delete()
         await register_command_message(chat_id, msg.id)
         return True
     
-    if message_text.lower() == '.saver status':
-        config = load_saver_config()
-        is_private, is_group = event.is_private, event.is_group
-        is_saved = should_save_message(chat_id, is_private, is_group)
-        status_text = f'📊 **СТАТУС СОХРАНЕНИЯ:**\n\n'
-        status_text += f'📍 Текущий чат: {"✅ ВКЛ" if is_saved else "❌ ВЫКЛ"}\n'
-        status_text += f'💬 Личные: {"✅" if config["save_private"] else "❌"}\n'
-        status_text += f'👥 Группы: {"✅" if config["save_groups"] else "❌"}\n'
-        status_text += f'📑 Каналы: {len(config["save_channels"])} шт.\n\n'
-        status_text += f'**ТИПЫ:**\n'
-        status_text += f'📝 Текст: {"✅" if config.get("save_text", True) else "❌"}\n'
-        status_text += f'🖼️ Медиа: {"✅" if config.get("save_media", True) else "❌"}\n'
-        status_text += f'🎤 Голосовые: {"✅" if config.get("save_voice", True) else "❌"}\n'
-        status_text += f'⏱️ Скоротечные: {"✅" if config.get("save_ttl_media", False) else "❌"}\n\n'
-        status_text += f'💡 *При удалении медиа автоматически пересылается в избранное*'
-        msg = await event.respond(status_text)
+    if message_text.lower() == '.конфиг показать':
+        config = load_ai_config()
+        text = f'''⚙️ **ТЕКУЩАЯ КОНФИГУРАЦИЯ:**
+
+🎭 Стиль: **{config.get("style", "стандартный")}**
+📝 {config.get("description", "—")}
+
+🌡️ Temperature: `{config.get("temperature", 0.8)}`
+📏 Max tokens: `{config.get("max_tokens", 1024)}`
+
+💬 **Системный промпт:**
+```
+{config.get("system_prompt", "—")[:200]}...
+```'''
+        msg = await event.respond(text)
         await event.delete()
         await register_command_message(chat_id, msg.id)
         return True
     
-    # Настройки типов сохранения
-    if message_text.lower() in ['.saver text on', '.saver text off']:
-        config = load_saver_config()
-        config['save_text'] = 'on' in message_text
-        save_saver_config(config)
-        msg = await event.respond(f'{"✅" if config["save_text"] else "❌"} Сохранение текста')
+    if message_text.lower() == '.конфиг сброс':
+        default_config = {
+            'system_prompt': 'ты дружелюбный помощник. отвечай естественно, как обычный человек в переписке. используй строчные буквы, без формальностей. будь кратким и по делу.',
+            'temperature': 0.8,
+            'max_tokens': 1024,
+            'style': 'дружелюбный',
+            'description': 'Стандартная конфигурация'
+        }
+        save_ai_config(default_config)
+        msg = await event.respond('✅ Конфигурация сброшена!')
         await event.delete()
         await register_command_message(chat_id, msg.id)
         return True
     
-    if message_text.lower() in ['.saver media on', '.saver media off']:
-        config = load_saver_config()
-        config['save_media'] = 'on' in message_text
-        save_saver_config(config)
-        msg = await event.respond(f'{"✅" if config["save_media"] else "❌"} Сохранение медиа\n\n💡 При удалении медиа автоматически пересылается в избранное')
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower() in ['.saver voice on', '.saver voice off']:
-        config = load_saver_config()
-        config['save_voice'] = 'on' in message_text
-        save_saver_config(config)
-        msg = await event.respond(f'{"✅" if config["save_voice"] else "❌"} Сохранение голосовых\n\n💡 При удалении ГС автоматически пересылается в избранное')
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower() in ['.saver ttl on', '.saver ttl off']:
-        config = load_saver_config()
-        config['save_ttl_media'] = 'on' in message_text
-        save_saver_config(config)
-        ttl_status = "✅ ВКЛЮЧЕНО" if config['save_ttl_media'] else "❌ ВЫКЛЮЧЕНО"
-        ttl_help = "\n\n💡 Скоротечные фото/видео будут сохраняться и пересылаться в избранное автоматически" if config['save_ttl_media'] else ""
-        msg = await event.respond(f'⏱️ Сохранение скоротечных медиа: {ttl_status}{ttl_help}')
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower() in ['.saver private on', '.saver private off']:
-        config = load_saver_config()
-        config['save_private'] = 'on' in message_text
-        save_saver_config(config)
-        msg = await event.respond(f'{"✅" if config["save_private"] else "❌"} Личные чаты')
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower() in ['.saver groups on', '.saver groups off']:
-        config = load_saver_config()
-        config['save_groups'] = 'on' in message_text
-        save_saver_config(config)
-        msg = await event.respond(f'{"✅" if config["save_groups"] else "❌"} Группы')
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower() == '.saver add':
-        config = load_saver_config()
-        chat_id_str = str(chat_id)
-        if chat_id_str not in config['save_channels']:
-            config['save_channels'].append(chat_id_str)
-            save_saver_config(config)
-            msg = await event.respond(f'✅ Чат добавлен!')
+    if message_text.lower() == '.конфиг удалить':
+        if os.path.exists(AI_CONFIG_FILE):
+            os.remove(AI_CONFIG_FILE)
+            msg = await event.respond('🗑️ Конфигурация удалена!')
         else:
-            msg = await event.respond(f'⚠️ Уже добавлен!')
+            msg = await event.respond('⚠️ Уже удалена')
         await event.delete()
         await register_command_message(chat_id, msg.id)
         return True
     
-    if message_text.lower() == '.saver remove':
-        config = load_saver_config()
-        chat_id_str = str(chat_id)
-        if chat_id_str in config['save_channels']:
-            config['save_channels'].remove(chat_id_str)
-            save_saver_config(config)
-            msg = await event.respond(f'❌ Чат удален!')
-        else:
-            msg = await event.respond(f'⚠️ Не был добавлен!')
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower() == '.saver show':
-        msgs = get_deleted_messages(limit=10)
-        if not msgs:
-            msg = await event.respond('📭 Нет удаленных сообщений')
-        else:
-            response = f'🗑️ **Последние {len(msgs)} удалённых:**\n\n'
-            for i, m in enumerate(msgs, 1):
-                sender = m.get('sender_name', 'Неизвестно')
-                text_type = "📝"
-                if m.get('has_photo'): text_type = "🖼️"
-                elif m.get('has_video'): text_type = "🎥"
-                elif m.get('has_document'): text_type = "📄"
-                elif m.get('has_voice'): text_type = "🎤"
-                response += f'{i}. {text_type} {sender}\n'
-                response += f'   Чат: `{m.get("chat_id")}` | {m.get("deleted_at", "")[:16]}\n'
-                response += f'   {m.get("text", "")[:50]}\n\n'
-            response += '\n💡 *Медиа отправлено в избранное*'
-            msg = await event.respond(response)
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    # Очистка
-    if message_text.lower() == '.saver clear all':
-        db = load_deleted_messages_db()
-        db.clear()
-        save_deleted_messages_db(db)
-        msg = await event.respond('🗑️ Вся база очищена!')
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower() == '.saver clear text':
-        clear_deleted_messages_by_type(chat_id, 'text')
-        msg = await event.respond('🗑️ Текстовые сообщения очищены!')
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower() == '.saver clear photo':
-        clear_deleted_messages_by_type(chat_id, 'photo')
-        msg = await event.respond('🗑️ Фото очищены!')
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower() == '.saver clear voice':
-        clear_deleted_messages_by_type(chat_id, 'voice')
-        msg = await event.respond('🗑️ Голосовые очищены!')
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower().startswith('.saver clear user '):
-        try:
-            parts = message_text.split()
-            if len(parts) < 4:
-                msg = await event.respond('❌ Формат: `.saver clear user <номер>`')
-                await event.delete()
-                await register_command_message(chat_id, msg.id)
-                return True
-            
-            index = int(parts[3]) - 1
-            users = load_temp_selection(chat_id)
-            if users is None:
-                msg = await event.respond('⚠️ Сначала вызовите `.saver all`')
-                await event.delete()
-                await register_command_message(chat_id, msg.id)
-                return True
-            
-            if 0 <= index < len(users):
-                sender_id = users[index]['sender_id']
-                sender_name = users[index]['name']
-                clear_deleted_messages_by_type(chat_id, None, None, sender_id)
-                msg = await event.respond(f'🗑️ Сообщения **{sender_name}** удалены!')
-            else:
-                msg = await event.respond('❌ Неверный номер')
-            
+    if message_text.lower() == '.конфиг загрузить':
+        if not event.reply_to_msg_id:
+            msg = await event.respond('❌ Ответьте на JSON файл!')
             await event.delete()
             await register_command_message(chat_id, msg.id)
             return True
-        except Exception as e:
-            msg = await event.respond(f'❌ Ошибка: {e}')
-            await event.delete()
-            await register_command_message(chat_id, msg.id)
-            return True
-    
-    if message_text.lower() == '.saver all':
-        if not event.is_private:
-            msg = await event.respond('❌ Команда доступна ТОЛЬКО в личном чате!')
-            await event.delete()
-            await register_command_message(chat_id, msg.id)
-            return True
-            
-        senders = get_all_senders_with_deleted()
-        if not senders:
-            msg = await event.respond('📭 Нет пользователей с удалёнными')
-            await event.delete()
-            await register_command_message(chat_id, msg.id)
-            return True
-            
-        users_list = [{'sender_id': sid, 'name': name} for sid, name, cnt in senders]
-        save_temp_selection(chat_id, users_list)
         
-        response = '👥 **ПОЛЬЗОВАТЕЛИ С УДАЛЁННЫМИ:**\n\n'
-        for i, (sid, name, cnt) in enumerate(senders, 1):
-            response += f'{i}. {name} — 🗑️ {cnt} шт.\n'
-        response += '\n🔢 Введите номер или `.saver user <номер>`\n💡 *Медиа отправлено в избранное*'
-        
-        msg = await event.respond(response)
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower().startswith('.saver user '):
         try:
-            parts = message_text.split()
-            if len(parts) < 3:
-                msg = await event.respond('❌ Формат: `.saver user <номер>`')
-                await event.delete()
-                await register_command_message(chat_id, msg.id)
-                return True
+            reply_msg = await event.get_reply_message()
+            if reply_msg.document:
+                file_path = await reply_msg.download_media(file=MEDIA_FOLDER)
                 
-            index = int(parts[2]) - 1
-            users = load_temp_selection(chat_id)
-            if users is None:
-                msg = await event.respond('⚠️ Сначала вызовите `.saver all`')
-                await event.delete()
-                await register_command_message(chat_id, msg.id)
-                return True
-            if 0 <= index < len(users):
-                sender_id = users[index]['sender_id']
-                sender_name = users[index]['name']
-                msgs = get_deleted_messages(sender_id=sender_id)
-                if not msgs:
-                    text = f'📭 У **{sender_name}** нет удалённых'
-                else:
-                    text = f'🗑️ **{sender_name}** (ВСЕГО: {len(msgs)} шт.):\n\n'
-                    display_msgs = msgs[:30]
-                    for i, m in enumerate(display_msgs, 1):
-                        text_type = "📝"
-                        if m.get('has_photo'): text_type = "🖼️"
-                        elif m.get('has_video'): text_type = "🎥"
-                        elif m.get('has_document'): text_type = "📄"
-                        elif m.get('has_voice'): text_type = "🎤"
-                        text += f'{i}. {text_type} [{m.get("deleted_at", "")[:16]}]\n'
-                        text += f'   Чат: `{m.get("chat_id")}`\n'
-                        text += f'   {m.get("text", "")[:50]}\n\n'
-                    if len(msgs) > 30:
-                        text += f'\n...ещё {len(msgs)-30} сообщений\n'
-                        text += f'💾 Всего в базе: {len(msgs)}\n'
-                    text += '\n💡 *Медиа отправлено в избранное*'
-                msg = await event.respond(text)
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    new_config = json.load(f)
+                
+                required_fields = ['system_prompt', 'temperature', 'max_tokens']
+                for field in required_fields:
+                    if field not in new_config:
+                        msg = await event.respond(f'❌ Нет поля: {field}')
+                        await event.delete()
+                        await register_command_message(chat_id, msg.id)
+                        os.remove(file_path)
+                        return True
+                
+                save_ai_config(new_config)
+                
+                style = new_config.get('style', 'custom')
+                desc = new_config.get('description', '—')
+                msg = await event.respond(f'✅ Загружено!\n\n🎭 **{style}**\n📝 {desc}')
+                
+                os.remove(file_path)
             else:
-                msg = await event.respond('❌ Неверный номер')
-            
-            user_selection_state.pop(str(chat_id), None)
+                msg = await event.respond('❌ Нужен JSON файл!')
+                
+            await event.delete()
+            await register_command_message(chat_id, msg.id)
+            return True
+        except json.JSONDecodeError:
+            msg = await event.respond('❌ Неверный JSON!')
             await event.delete()
             await register_command_message(chat_id, msg.id)
             return True
@@ -947,79 +738,352 @@ async def handle_saver_commands(event, message_text):
     
     return False
 
-async def handle_digit_selection(event, message_text):
-    """Обработка цифр для выбора пользователя"""
+async def handle_ai_chats_commands(event, message_text):
     chat_id = event.chat_id
+    await delete_previous_command(chat_id)
     
-    if not message_text.strip().isdigit():
-        return False
+    if message_text.lower() in ['.ии', '.ии помощь']:
+        help_text = '''🤖 **УПРАВЛЕНИЕ ИИ**
+
+📊 **СТАТУС:**
+• `.ии статус` - настройки
+
+🌍 **РЕЖИМЫ:**
+• `.ии везде вкл/выкл` - глобально
+• `.ии личные вкл/выкл` - только ЛС
+• `.ии группы вкл/выкл` - только группы
+
+💬 **ЭТОТ ЧАТ:**
+• `.ии вкл/выкл` - здесь
+
+📋 **ДРУГОЕ:**
+• `.ии список` - активные чаты
+• `.ии очистить` - история
+• `.ии очистить все` - вся история
+
+⚙️ `.конфиг` - личность ИИ'''
+        msg = await event.respond(help_text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.ии статус':
+        config = load_ai_chats_config()
+        ai_config = load_ai_config()
+        is_private, is_group = event.is_private, event.is_group
+        is_active = should_ai_respond(chat_id, is_private, is_group)
         
-    users = load_temp_selection(chat_id)
-    if users is None:
-        return False
-        
-    try:
-        index = int(message_text.strip()) - 1
-        if 0 <= index < len(users):
-            sender_id = users[index]['sender_id']
-            sender_name = users[index]['name']
-            msgs = get_deleted_messages(sender_id=sender_id)
-            
-            if not msgs:
-                text = f'📭 У **{sender_name}** нет удалённых'
-            else:
-                text = f'🗑️ **{sender_name}** (ВСЕГО: {len(msgs)} шт.):\n\n'
-                display_msgs = msgs[:30]
-                for i, m in enumerate(display_msgs, 1):
-                    text_type = "📝"
-                    if m.get('has_photo'): text_type = "🖼️"
-                    elif m.get('has_video'): text_type = "🎥"
-                    elif m.get('has_document'): text_type = "📄"
-                    elif m.get('has_voice'): text_type = "🎤"
-                    text += f'{i}. {text_type} [{m.get("deleted_at", "")[:16]}]\n'
-                    text += f'   Чат: `{m.get("chat_id")}`\n'
-                    text += f'   {m.get("text", "")[:50]}\n\n'
-                if len(msgs) > 30:
-                    text += f'\n...ещё {len(msgs)-30} сообщений\n'
-                    text += f'💾 Всего в базе: {len(msgs)}\n'
-                text += '\n💡 *Медиа отправлено в избранное*'
-                    
-            msg = await event.respond(text)
-            user_selection_state.pop(str(chat_id), None)
-            await event.delete()
-            await register_command_message(chat_id, msg.id)
-            return True
+        text = f'''📊 **СТАТУС ИИ:**
+
+💬 Этот чат: {"✅ ВКЛ" if is_active else "❌ ВЫКЛ"}
+
+🌍 **РЕЖИМЫ:**
+• Везде: {"✅" if config["global_mode"] else "❌"}
+• Личные: {"✅" if config["private_only"] else "❌"}
+• Группы: {"✅" if config["groups_only"] else "❌"}
+
+📋 Активных: {len(config["enabled_chats"])}
+
+🎭 **ЛИЧНОСТЬ:**
+**{ai_config.get("style", "стандартный")}**'''
+        msg = await event.respond(text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() in ['.ии везде вкл', '.ии везде выкл']:
+        config = load_ai_chats_config()
+        config['global_mode'] = 'вкл' in message_text
+        save_ai_chats_config(config)
+        msg = await event.respond(f'{"🌍 ВКЛ" if config["global_mode"] else "❌ ВЫКЛ"}')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() in ['.ии личные вкл', '.ии личные выкл']:
+        config = load_ai_chats_config()
+        config['private_only'] = 'вкл' in message_text
+        if config['private_only']:
+            config['groups_only'] = False
+        save_ai_chats_config(config)
+        msg = await event.respond(f'{"✅ Только ЛС" if config["private_only"] else "❌ ВЫКЛ"}')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() in ['.ии группы вкл', '.ии группы выкл']:
+        config = load_ai_chats_config()
+        config['groups_only'] = 'вкл' in message_text
+        if config['groups_only']:
+            config['private_only'] = False
+        save_ai_chats_config(config)
+        msg = await event.respond(f'{"✅ Только группы" if config["groups_only"] else "❌ ВЫКЛ"}')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.ии вкл':
+        config = load_ai_chats_config()
+        chat_id_str = str(chat_id)
+        if chat_id_str not in config['enabled_chats']:
+            config['enabled_chats'].append(chat_id_str)
+            save_ai_chats_config(config)
+            msg = await event.respond('✅ ИИ ВКЛ!')
         else:
-            msg = await event.respond('❌ Неверный номер')
+            msg = await event.respond('⚠️ Уже ВКЛ!')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.ии выкл':
+        config = load_ai_chats_config()
+        chat_id_str = str(chat_id)
+        if chat_id_str in config['enabled_chats']:
+            config['enabled_chats'].remove(chat_id_str)
+            save_ai_chats_config(config)
+            msg = await event.respond('❌ ИИ ВЫКЛ!')
+        else:
+            msg = await event.respond('⚠️ Уже ВЫКЛ!')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.ии список':
+        config = load_ai_chats_config()
+        if not config['enabled_chats']:
+            text = '📭 Нет активных'
+        else:
+            text = f'📋 **Активные ({len(config["enabled_chats"])}):**\n\n'
+            for cid in config['enabled_chats']:
+                text += f'• `{cid}`\n'
+        msg = await event.respond(text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.ии очистить':
+        clear_chat_history(chat_id)
+        msg = await event.respond('🗑️ История очищена!')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.ии очистить все':
+        global db
+        db = {}
+        save_db(db)
+        msg = await event.respond('🗑️ Вся история очищена!')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    return False
+
+
+async def handle_mute_commands(event, message_text):
+    chat_id = event.chat_id
+    await delete_previous_command(chat_id)
+    
+    if message_text.lower() in ['.замолчи', '.замолчи помощь']:
+        help_text = '''🔇 **ЗАГЛУШКА**
+
+**ЗАГЛУШИТЬ:**
+• `.замолчи` (ответ)
+• `.замолчи @username`
+• `.замолчи <ID>`
+
+**РАЗГЛУШИТЬ:**
+• `.говори` (ответ)
+• `.говори @username`
+• `.говори <ID>`
+• `.говори <номер>` (из списка)
+
+**ПРОСМОТР:**
+• `.замолчи список`
+
+💡 *Заглушенные:*
+• Сообщения удаляются автоматически
+• Не сохраняются
+• ИИ игнорирует'''
+        msg = await event.respond(help_text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.замолчи список':
+        all_muted = get_all_muted_users()
+        if not all_muted:
+            msg = await event.respond('📭 Нет заглушенных')
+        else:
+            text = f'🔇 **Заглушенные ({len(all_muted)}):**\n\n'
+            for i, (uid, info) in enumerate(all_muted.items(), 1):
+                scope = info.get('scope', '?')
+                name = info.get('user_name', 'Неизвестно')
+                text += f'{i}. {name}\n'
+                text += f'   ID: `{uid}` | {scope}\n\n'
+            text += '\n🔊 `.говори <номер>`'
+            msg = await event.respond(text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.замолчи' and event.reply_to_msg_id:
+        try:
+            reply_msg = await event.get_reply_message()
+            user_id = reply_msg.sender_id
+            sender = await reply_msg.get_sender()
+            user_name = getattr(sender, 'first_name', 'Неизвестно')
+            if hasattr(sender, 'username') and sender.username:
+                user_name += f' (@{sender.username})'
+            
+            mute_user(chat_id, user_id, user_name)
+            msg = await event.respond(f'🔇 **{user_name}** заглушен!\n\n💡 Сообщения удаляются\n`.говори` - разглушить')
             await event.delete()
             await register_command_message(chat_id, msg.id)
             return True
-    except:
-        return False
+        except Exception as e:
+            msg = await event.respond(f'❌ Ошибка: {e}')
+            await event.delete()
+            await register_command_message(chat_id, msg.id)
+            return True
+    
+    if message_text.lower().startswith('.замолчи '):
+        parts = message_text.split(maxsplit=1)
+        if len(parts) < 2:
+            return False
+        
+        target = parts[1].strip()
+        
+        if target.isdigit():
+            user_id = int(target)
+            user_name = f"ID: {user_id}"
+            mute_user_by_id(user_id, user_name)
+            msg = await event.respond(f'🔇 `{user_id}` заглушен глобально!')
+            await event.delete()
+            await register_command_message(chat_id, msg.id)
+            return True
+        
+        if target.startswith('@'):
+            try:
+                username = target[1:]
+                user = await client.get_entity(username)
+                user_id = user.id
+                user_name = getattr(user, 'first_name', 'Неизвестно')
+                if hasattr(user, 'username') and user.username:
+                    user_name += f' (@{user.username})'
+                
+                mute_user_by_id(user_id, user_name)
+                msg = await event.respond(f'🔇 **{user_name}** заглушен глобально!')
+                await event.delete()
+                await register_command_message(chat_id, msg.id)
+                return True
+            except Exception as e:
+                msg = await event.respond(f'❌ Не найден: {e}')
+                await event.delete()
+                await register_command_message(chat_id, msg.id)
+                return True
+    
+    if message_text.lower().startswith('.говори'):
+        if event.reply_to_msg_id and message_text.lower() == '.говори':
+            try:
+                reply_msg = await event.get_reply_message()
+                user_id = reply_msg.sender_id
+                
+                user_info = unmute_user_by_id(user_id)
+                if not user_info:
+                    user_info = unmute_user(chat_id, user_id)
+                
+                if user_info:
+                    msg = await event.respond(f'🔊 **{user_info.get("user_name")}** разглушен!')
+                else:
+                    msg = await event.respond('⚠️ Не был заглушен!')
+                
+                await event.delete()
+                await register_command_message(chat_id, msg.id)
+                return True
+            except Exception as e:
+                msg = await event.respond(f'❌ Ошибка: {e}')
+                await event.delete()
+                await register_command_message(chat_id, msg.id)
+                return True
+        
+        parts = message_text.split(maxsplit=1)
+        if len(parts) >= 2:
+            target = parts[1].strip()
+            
+            if target.isdigit():
+                try:
+                    index = int(target) - 1
+                    all_muted = get_all_muted_users()
+                    muted_list = list(all_muted.items())
+                    
+                    if 0 <= index < len(muted_list):
+                        user_id = muted_list[index][0]
+                        user_info = muted_list[index][1]
+                        
+                        unmute_user_by_id(int(user_id))
+                        msg = await event.respond(f'🔊 **{user_info.get("user_name")}** разглушен!')
+                    else:
+                        msg = await event.respond('❌ Неверный номер')
+                    
+                    await event.delete()
+                    await register_command_message(chat_id, msg.id)
+                    return True
+                except:
+                    pass
+            
+            if target.isdigit():
+                user_id = int(target)
+                user_info = unmute_user_by_id(user_id)
+                if user_info:
+                    msg = await event.respond(f'🔊 `{user_id}` разглушен!')
+                else:
+                    msg = await event.respond('⚠️ Не был заглушен!')
+                await event.delete()
+                await register_command_message(chat_id, msg.id)
+                return True
+            
+            if target.startswith('@'):
+                try:
+                    username = target[1:]
+                    user = await client.get_entity(username)
+                    user_id = user.id
+                    
+                    user_info = unmute_user_by_id(user_id)
+                    if user_info:
+                        msg = await event.respond(f'🔊 **{user_info.get("user_name")}** разглушен!')
+                    else:
+                        msg = await event.respond('⚠️ Не был заглушен!')
+                    
+                    await event.delete()
+                    await register_command_message(chat_id, msg.id)
+                    return True
+                except Exception as e:
+                    msg = await event.respond(f'❌ Ошибка: {e}')
+                    await event.delete()
+                    await register_command_message(chat_id, msg.id)
+                    return True
+    
+    return False
 
 async def handle_animation_commands(event, message_text):
     chat_id = event.chat_id
     await delete_previous_command(chat_id)
     
     if message_text.lower() == '.anim help':
-        help_text = '''🎬 **КОМАНДЫ АНИМАЦИЙ**
+        help_text = '''🎬 **АНИМАЦИИ**
 
 **ТИПЫ:**
-• rainbow 🌈 - радужная анимация
-• caps 🔤 - чередование регистра
+• rainbow 🌈
+• caps 🔤
 
 **ИСПОЛЬЗОВАНИЕ:**
 `.anim <тип> текст`
-Пример: `.anim rainbow Привет!`
 
 **НАСТРОЙКИ:**
-• `.anim mode <тип>` - авто-анимация
-• `.anim mode off` - выключить
-• `.anim duration <сек>` - длительность
-• `.anim interval <сек>` - интервал
-• `.anim status` - показать настройки
-
-💡 Команда в тексте удаляется автоматически'''
+• `.anim mode <тип>` - авто
+• `.anim mode off` - выкл
+• `.anim status` - статус'''
         msg = await event.respond(help_text)
         await event.delete()
         await register_command_message(chat_id, msg.id)
@@ -1028,43 +1092,12 @@ async def handle_animation_commands(event, message_text):
     if message_text.lower() == '.anim status':
         settings = get_animation_settings(chat_id)
         mode = settings['mode']
-        status_text = f'🎬 **Статус:**\n'
-        status_text += f'Режим: **{mode.upper() if mode else "ВЫКЛ"}**\n'
-        status_text += f'⏱️ Длительность: {settings["duration"]} сек\n'
-        status_text += f'⏲️ Интервал: {settings["interval"]} сек'
+        status_text = f'''🎬 **Статус:**
+
+Режим: **{mode.upper() if mode else "ВЫКЛ"}**
+⏱️ {settings["duration"]} сек
+⏲️ {settings["interval"]} сек'''
         msg = await event.respond(status_text)
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower().startswith('.anim duration '):
-        try:
-            duration = float(message_text.split()[2])
-            config = load_animation_config()
-            chat_key = str(chat_id)
-            if chat_key not in config:
-                config[chat_key] = {'mode': None, 'interval': 0.5}
-            config[chat_key]['duration'] = duration
-            save_animation_config(config)
-            msg = await event.respond(f'✅ Длительность: {duration} сек')
-        except:
-            msg = await event.respond('❌ Неверный формат')
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    if message_text.lower().startswith('.anim interval '):
-        try:
-            interval = float(message_text.split()[2])
-            config = load_animation_config()
-            chat_key = str(chat_id)
-            if chat_key not in config:
-                config[chat_key] = {'mode': None, 'duration': 40}
-            config[chat_key]['interval'] = interval
-            save_animation_config(config)
-            msg = await event.respond(f'✅ Интервал: {interval} сек')
-        except:
-            msg = await event.respond('❌ Неверный формат')
         await event.delete()
         await register_command_message(chat_id, msg.id)
         return True
@@ -1072,7 +1105,7 @@ async def handle_animation_commands(event, message_text):
     if message_text.lower().startswith('.anim mode '):
         parts = message_text.split(maxsplit=2)
         if len(parts) < 3:
-            msg = await event.respond('❌ Формат: `.anim mode <тип>`')
+            msg = await event.respond('❌ `.anim mode <тип>`')
             await event.delete()
             await register_command_message(chat_id, msg.id)
             return True
@@ -1080,10 +1113,10 @@ async def handle_animation_commands(event, message_text):
         mode = parts[2].lower()
         if mode == 'off':
             set_animation_mode(chat_id, None)
-            msg = await event.respond('❌ Режим ВЫКЛЮЧЕН')
+            msg = await event.respond('❌ ВЫКЛ')
         elif mode in ['rainbow', 'caps']:
             set_animation_mode(chat_id, mode)
-            msg = await event.respond(f'✅ Режим **{mode.upper()}** включен!')
+            msg = await event.respond(f'✅ **{mode.upper()}**')
         else:
             msg = await event.respond('❌ Неизвестный режим!')
         await event.delete()
@@ -1103,73 +1136,9 @@ async def handle_animation_commands(event, message_text):
     
     return False
 
-async def handle_mute_commands(event, message_text):
-    chat_id = event.chat_id
-    await delete_previous_command(chat_id)
-    
-    if message_text.lower() == '.замолчи':
-        if not event.reply_to_msg_id:
-            msg = await event.respond('❌ Ответьте на сообщение!')
-            await event.delete()
-            await register_command_message(chat_id, msg.id)
-            return True
-        try:
-            reply_msg = await event.get_reply_message()
-            user_id = reply_msg.sender_id
-            sender = await reply_msg.get_sender()
-            user_name = getattr(sender, 'first_name', 'Неизвестно')
-            if hasattr(sender, 'username') and sender.username:
-                user_name += f' (@{sender.username})'
-            mute_user(chat_id, user_id, user_name)
-            msg = await event.respond(f'🔇 **{user_name}** заглушен!\n\n💡 Его удалённые сообщения больше не сохраняются\nРазглушить: `.говори`')
-            await event.delete()
-            await register_command_message(chat_id, msg.id)
-            return True
-        except Exception as e:
-            msg = await event.respond(f'❌ Ошибка: {e}')
-            await event.delete()
-            await register_command_message(chat_id, msg.id)
-            return True
-    
-    if message_text.lower() == '.говори':
-        if not event.reply_to_msg_id:
-            msg = await event.respond('❌ Ответьте на сообщение!')
-            await event.delete()
-            await register_command_message(chat_id, msg.id)
-            return True
-        try:
-            reply_msg = await event.get_reply_message()
-            user_id = reply_msg.sender_id
-            user_info = unmute_user(chat_id, user_id)
-            if user_info:
-                msg = await event.respond(f'🔊 **{user_info.get("user_name")}** разглушен!\n\n💡 Удалённые сообщения снова сохраняются')
-            else:
-                msg = await event.respond('⚠️ Не был заглушен!')
-            await event.delete()
-            await register_command_message(chat_id, msg.id)
-            return True
-        except Exception as e:
-            msg = await event.respond(f'❌ Ошибка: {e}')
-            await event.delete()
-            await register_command_message(chat_id, msg.id)
-            return True
-    
-    if message_text.lower() == '.замолчи список':
-        muted = get_muted_users(chat_id)
-        if not muted:
-            msg = await event.respond('📭 Нет заглушенных')
-        else:
-            list_text = f'🔇 **Заглушенные ({len(muted)}):**\n\n'
-            for uid, info in muted.items():
-                list_text += f'• {info.get("user_name", "?")} (ID: `{uid}`)\n'
-            msg = await event.respond(list_text)
-        await event.delete()
-        await register_command_message(chat_id, msg.id)
-        return True
-    
-    return False
 
 # ============ ОБРАБОТЧИКИ СОБЫТИЙ ============
+
 @client.on(events.NewMessage(incoming=True, from_users=None))
 async def immediate_save_handler(event):
     try:
@@ -1178,6 +1147,7 @@ async def immediate_save_handler(event):
         if OWNER_ID and sender_id == OWNER_ID:
             return
         
+        # Удаляем сообщения заглушенных пользователей
         if is_user_muted(chat_id, sender_id):
             print(f'🔇 Заглушенный {sender_id} - удаляем MSG {message_id}')
             try:
@@ -1202,19 +1172,18 @@ async def immediate_save_handler(event):
             if hasattr(event.message.media, 'photo') and event.message.media.photo:
                 if hasattr(event.message.media, 'ttl_seconds') and event.message.media.ttl_seconds:
                     is_ttl_media = True
-                    print(f'⏱️ Обнаружено скоротечное ФОТО! TTL: {event.message.media.ttl_seconds}с')
+                    print(f'⏱️ Скоротечное ФОТО! TTL: {event.message.media.ttl_seconds}с')
             elif hasattr(event.message.media, 'document') and event.message.media.document:
                 if hasattr(event.message.media, 'ttl_seconds') and event.message.media.ttl_seconds:
                     is_ttl_media = True
-                    print(f'⏱️ Обнаружено скоротечное ВИДЕО! TTL: {event.message.media.ttl_seconds}с')
+                    print(f'⏱️ Скоротечное ВИДЕО! TTL: {event.message.media.ttl_seconds}с')
         
         config = load_saver_config()
         
-        # Если это скоротечное медиа и функция включена
         save_this_media = config.get('save_media', True)
         if is_ttl_media and config.get('save_ttl_media', False):
             save_this_media = True
-            print(f'💾 Сохраняем скоротечное медиа (настройка включена)')
+            print(f'💾 Сохраняем скоротечное медиа')
         
         message_data = {
             'chat_id': chat_id,
@@ -1231,7 +1200,6 @@ async def immediate_save_handler(event):
             'media_path': None
         }
         
-        # Сохраняем медиа если нужно
         if save_this_media and (event.message.photo or event.message.video or 
                                 event.message.document or event.message.voice or is_ttl_media):
             if is_ttl_media:
@@ -1255,7 +1223,6 @@ async def deleted_message_handler(event):
                 real_chat_id = message_data.get('chat_id')
                 message_data['deleted_at'] = datetime.now().isoformat()
                 
-                # Пересылаем медиа в избранное ИЗ ФАЙЛА
                 config = load_saver_config()
                 should_forward = False
                 caption_prefix = ""
@@ -1272,16 +1239,16 @@ async def deleted_message_handler(event):
                     caption_prefix = "🎤 Удалённое ГС"
                 elif message_data.get('is_ttl') and config.get('save_ttl_media', False):
                     should_forward = True
-                    caption_prefix = "⏱️ Скоротечное медиа"
+                    caption_prefix = "⏱️ Скоротечное"
                 
                 if should_forward and media_path:
                     sender_name = message_data.get('sender_name', 'Неизвестно')
                     msg_text = message_data.get('text', '')
-                    full_caption = f"{caption_prefix}\n👤 От: {sender_name}\n🗑️ Удалено: {message_data.get('deleted_at', '')[:16]}"
+                    full_caption = f"{caption_prefix}\n👤 {sender_name}\n🗑️ {message_data.get('deleted_at', '')[:16]}"
                     if msg_text:
-                        full_caption += f"\n📝 Текст: {msg_text[:100]}"
+                        full_caption += f"\n📝 {msg_text[:100]}"
                     
-                    print(f'📤 Пересылаем в избранное: {media_path}')
+                    print(f'📤 Пересылаем: {media_path}')
                     await forward_to_saved(media_path, full_caption)
                 
                 add_deleted_message(real_chat_id, message_data)
@@ -1291,28 +1258,64 @@ async def deleted_message_handler(event):
         traceback.print_exc()
 
 @client.on(events.NewMessage(incoming=True))
-async def incoming_handler(event):
+async def incoming_ai_handler(event):
     try:
         chat_id = event.chat_id
-        if not is_chat_active(chat_id):
+        is_private, is_group = event.is_private, event.is_group
+        
+        # Проверяем, должен ли ИИ отвечать
+        if not should_ai_respond(chat_id, is_private, is_group):
             return
-        message_text = event.message.message or 'сообщение без текста'
-        save_message(chat_id, 'user', message_text)
+        
+        # Игнорируем заглушенных
+        sender_id = event.sender_id
+        if is_user_muted(chat_id, sender_id):
+            return
+        
+        # Игнорируем команды
+        message_text = event.message.message or ''
+        if is_command_message(message_text):
+            return
+        
+        # Если нет текста и нет медиа - пропускаем
+        if not message_text and not event.message.photo and not event.message.voice:
+            return
+        
+        # Обрабатываем голосовое
+        voice_path = None
+        if event.message.voice:
+            print('🎤 Получено голосовое')
+            voice_path = await save_media_file(event.message)
+        
+        # Обрабатываем фото
+        image_path = None
+        if event.message.photo:
+            print('🖼️ Получено фото')
+            image_path = await save_media_file(event.message)
+        
+        # Сохраняем сообщение пользователя
+        save_message(chat_id, 'user', message_text or '[медиа]')
+        
+        # Получаем историю
         history = get_chat_history(chat_id)
-        system_message = {
-            'role': 'system',
-            'content': 'Ты дружелюбный помощник. Отвечай кратко на языке пользователя.'
-        }
-        response = await get_ai_response([system_message] + history)
-        content = response.get('content', 'Не смог ответить')
-        if content and not content.startswith('Ошибка'):
-            save_message(chat_id, 'assistant', content, response.get('reasoning_details'))
+        
+        # Получаем ответ ИИ
+        response = await get_ai_response(history, include_voice=voice_path, include_image=image_path)
+        content = response.get('content', 'не могу ответить...')
+        
+        if content and 'ошибка' not in content.lower():
+            save_message(chat_id, 'assistant', content)
+        
+        # Отправляем ответ
         await event.respond(content)
+        
     except RPCError as e:
         if 'TOPIC_CLOSED' in str(e) or 'CHAT_WRITE_FORBIDDEN' in str(e):
-            deactivate_chat(chat_id)
+            print(f'⚠️ Чат закрыт: {chat_id}')
     except Exception as e:
         print(f'❌ Ошибка входящего: {e}')
+        import traceback
+        traceback.print_exc()
 
 @client.on(events.NewMessage(outgoing=True))
 async def outgoing_handler(event):
@@ -1320,66 +1323,46 @@ async def outgoing_handler(event):
         chat_id = event.chat_id
         message_text = event.message.message or ''
         
-        # Команда удаления последнего меню
+        # Удаление последнего меню
         if message_text.lower() == '.del':
             await delete_previous_command(chat_id)
             await event.delete()
             return
         
-        # Проверяем выбор цифрой
-        if await handle_digit_selection(event, message_text):
-            return
-        
-        if message_text.lower().startswith('.saver'):
-            if await handle_saver_commands(event, message_text):
+        # Обработка команд
+        if message_text.lower().startswith('.конфиг'):
+            if await handle_ai_config_commands(event, message_text):
                 return
         
-        if message_text.lower().startswith('.anim'):
-            if await handle_animation_commands(event, message_text):
+        if message_text.lower().startswith('.ии'):
+            if await handle_ai_chats_commands(event, message_text):
                 return
         
         if message_text.lower().startswith('.замолчи') or message_text.lower().startswith('.говори'):
             if await handle_mute_commands(event, message_text):
                 return
         
-        if ACTIVATION_COMMAND.lower() in message_text.lower():
-            await delete_previous_command(chat_id)
-            activate_chat(chat_id)
-            msg = await event.respond('✅ AI активирован!\n\nКоманды:\n• "Ai Stop" - выключить\n• "Ai Clear" - очистить')
-            await event.delete()
-            await register_command_message(chat_id, msg.id)
-            return
+        if message_text.lower().startswith('.anim'):
+            if await handle_animation_commands(event, message_text):
+                return
         
-        if 'ai stop' in message_text.lower():
-            await delete_previous_command(chat_id)
-            deactivate_chat(chat_id)
-            msg = await event.respond('❌ AI выключен')
-            await event.delete()
-            await register_command_message(chat_id, msg.id)
-            return
-        
-        if 'ai clear' in message_text.lower():
-            if is_chat_active(chat_id):
-                await delete_previous_command(chat_id)
-                clear_chat_history(chat_id)
-                msg = await event.respond('🗑️ История очищена!')
-                await event.delete()
-                await register_command_message(chat_id, msg.id)
-            return
-        
+        # Автоанимация
         settings = get_animation_settings(chat_id)
         if settings['mode'] and message_text.strip():
-            if not message_text.startswith('.') and not message_text.lower().startswith('ai '):
+            if not message_text.startswith('.') and not is_command_message(message_text):
                 print(f'🎬 Автоанимация {settings["mode"]}')
                 await run_animation(event.message, message_text, settings['mode'], settings['duration'], settings['interval'])
                 return
+                
     except Exception as e:
         print(f'❌ Ошибка исходящего: {e}')
+        import traceback
+        traceback.print_exc()
 
 # ============ ГЛАВНАЯ ФУНКЦИЯ ============
 async def main():
-    global OWNER_ID
-    print('🚀 Запуск Telegram Userbot...')
+    global OWNER_ID, db
+    print('🚀 Запуск Telegram AI Userbot...')
     print(f'📝 Сессия: {SESSION_NAME}.session')
     
     Path(MEDIA_FOLDER).mkdir(parents=True, exist_ok=True)
@@ -1397,33 +1380,36 @@ async def main():
         me = await client.get_me()
         OWNER_ID = me.id
         
+        # Загружаем БД
+        db = load_db()
+        
         print(f'✅ Userbot запущен!')
         print(f'👤 Аккаунт: {me.username or me.first_name} (ID: {OWNER_ID})')
-        print(f'🤖 AI: {MODEL_NAME}')
-        print(f'\n🆕 ВОЗМОЖНОСТИ:')
+        print(f'🤖 AI: {MODEL_NAME} @ {ONLYSQ_API_URL}')
+        print(f'\n🆕 НОВЫЕ ВОЗМОЖНОСТИ:')
+        print('✅ ИИ отвечает как человек (с маленькой буквы)')
+        print('🎤 Поддержка голосовых сообщений')
+        print('🖼️ Поддержка изображений')
+        print('⚙️ Настройка личности через JSON')
+        print('🔇 Улучшенная заглушка (ID, @username, глобально)')
         print('⚡ Мгновенное сохранение удаленных')
-        print('🎬 2 типа анимаций (rainbow, caps)')
-        print('🔇 Заглушка пользователей')
-        print('🗑️ Тонкая очистка по типам')
-        print('📤 Автопересылка медиа в избранное ИЗ ФАЙЛОВ')
+        print('📤 Автопересылка медиа в избранное')
         print('⏱️ Сохранение скоротечных медиа')
+        print('🔓 Без SSL verification')
         print('\n📝 ОСНОВНЫЕ КОМАНДЫ:')
-        print('   .saver help   - 📚 Полное меню')
-        print('   .saver status - 📊 Статус')
-        print('   .saver show   - 📄 Последние 10')
-        print('   .saver all    - 👥 Все пользователи')
-        print('   .saver ttl on - ⏱️ Скоротечные фото')
-        print('   .anim help    - 🎞️ Анимации')
-        print('   .замолчи      - 🔇 Заглушить')
-        print('   .del          - 🗑️ Удалить меню')
-        print('\n💡 ИСПРАВЛЕНО:')
-        print('   Теперь медиа пересылается ИЗ СОХРАНЕННОГО ФАЙЛА')
-        print('   Фото/видео/ГС автоматически попадают в избранное!')
+        print('   .ии          - управление ИИ')
+        print('   .конфиг      - настройка личности')
+        print('   .замолчи     - заглушка')
+        print('   .saver help  - сохранение')
+        print('   .anim help   - анимации')
+        print('   .del         - удалить меню')
         print('\n🎧 Слушаю...\n')
         
         await client.run_until_disconnected()
     except Exception as e:
         print(f'❌ Ошибка: {e}')
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 # ============ ЗАПУСК ============
@@ -1432,11 +1418,6 @@ if __name__ == '__main__':
         asyncio.run(main())
     except KeyboardInterrupt:
         print('\n👋 Userbot остановлен')
-        try:
-            with open(TEMP_SELECTION_FILE, 'w') as f:
-                json.dump(user_selection_state, f, default=str)
-        except:
-            pass
     except Exception as e:
         print(f'\n❌ Критическая ошибка: {e}')
         sys.exit(1)
