@@ -5,7 +5,7 @@ import sys
 import base64
 from datetime import datetime, timedelta
 from pathlib import Path
-from openai import OpenAI
+from openai import AsyncOpenAI
 from telethon import TelegramClient, events
 from telethon.errors import RPCError
 
@@ -38,7 +38,7 @@ user_selection_state = {}
 db = {}
 
 # Инициализация OpenAI клиента
-openai_client = OpenAI(
+openai_client = AsyncOpenAI(
     base_url=ONLYSQ_API_URL,
     api_key=ONLYSQ_API_KEY,
 )
@@ -541,8 +541,10 @@ async def get_ai_response(messages, include_voice=None, include_image=None):
             if content_parts:
                 full_messages[-1]['content'] = content_parts
         
-        # Используем OpenAI SDK
-        completion = openai_client.chat.completions.create(
+        print(f'🤖 Запрос к ИИ: {len(full_messages)} сообщений')
+        
+        # Используем AsyncOpenAI с await
+        completion = await openai_client.chat.completions.create(
             model=MODEL_NAME,
             messages=full_messages,
             temperature=config.get('temperature', 0.8),
@@ -554,6 +556,7 @@ async def get_ai_response(messages, include_voice=None, include_image=None):
         if not content:
             content = 'хм...'
         
+        print(f'✅ Получен ответ: {content[:50]}...')
         return {'content': content}
         
     except Exception as e:
@@ -1503,23 +1506,33 @@ async def incoming_ai_handler(event):
         chat_id = event.chat_id
         is_private, is_group = event.is_private, event.is_group
         
+        print(f'\n📨 Входящее: chat_id={chat_id}, private={is_private}, group={is_group}')
+        
         # Проверяем, должен ли ИИ отвечать
-        if not should_ai_respond(chat_id, is_private, is_group):
+        should_respond = should_ai_respond(chat_id, is_private, is_group)
+        print(f'🤖 ИИ должен ответить: {should_respond}')
+        
+        if not should_respond:
             return
         
         # Игнорируем заглушенных
         sender_id = event.sender_id
         if is_user_muted(chat_id, sender_id):
+            print(f'🔇 Заглушен: {sender_id}')
             return
         
         # Игнорируем команды
         message_text = event.message.message or ''
         if is_command_message(message_text):
+            print(f'⚠️ Команда игнорируется: {message_text[:50]}')
             return
         
         # Если нет текста и нет медиа - пропускаем
         if not message_text and not event.message.photo and not event.message.voice:
+            print(f'⚠️ Нет текста и медиа')
             return
+        
+        print(f'✅ Обрабатываем: {message_text[:50] if message_text else "[медиа]"}')
         
         # Обрабатываем голосовое
         voice_path = None
@@ -1538,6 +1551,7 @@ async def incoming_ai_handler(event):
         
         # Получаем историю
         history = get_chat_history(chat_id)
+        print(f'📚 История: {len(history)} сообщений')
         
         # Получаем ответ ИИ
         response = await get_ai_response(history, include_voice=voice_path, include_image=image_path)
@@ -1547,6 +1561,7 @@ async def incoming_ai_handler(event):
             save_message(chat_id, 'assistant', content)
         
         # Отправляем ответ
+        print(f'📤 Отправляем ответ: {content[:50]}...')
         await event.respond(content)
         
     except RPCError as e:
