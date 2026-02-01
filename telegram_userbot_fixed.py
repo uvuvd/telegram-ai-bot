@@ -5,7 +5,7 @@ import sys
 import base64
 from datetime import datetime, timedelta
 from pathlib import Path
-from openai import AsyncOpenAI
+import aiohttp
 from telethon import TelegramClient, events
 from telethon.errors import RPCError
 
@@ -14,7 +14,7 @@ API_ID = int(os.environ.get('API_ID', '39678712'))
 API_HASH = os.environ.get('API_HASH', '3089ac53d532e75deb5dd641e4863d49')
 PHONE = os.environ.get('PHONE', '+919036205120')
 
-ONLYSQ_API_URL = 'https://api.onlysq.ru/ai/openai'
+ONLYSQ_API_URL = 'https://api.onlysq.ru/ai/openai/v1/chat/completions'
 ONLYSQ_API_KEY = 'openai'
 MODEL_NAME = 'gemini-3-flash'
 
@@ -36,12 +36,6 @@ COMMAND_PREFIXES = ['.saver', '.deleted', '.anim', '.замолчи', '.гово
 
 user_selection_state = {}
 db = {}
-
-# Инициализация OpenAI клиента
-openai_client = AsyncOpenAI(
-    base_url=ONLYSQ_API_URL,
-    api_key=ONLYSQ_API_KEY,
-)
 
 # ============ БАЗОВЫЕ ФУНКЦИИ БД ============
 def load_db():
@@ -542,23 +536,48 @@ async def get_ai_response(messages, include_voice=None, include_image=None):
                 full_messages[-1]['content'] = content_parts
         
         print(f'🤖 Запрос к ИИ: {len(full_messages)} сообщений')
+        print(f'🔗 URL: {ONLYSQ_API_URL}')
         
-        # Используем AsyncOpenAI с await
-        completion = await openai_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=full_messages,
-            temperature=config.get('temperature', 0.8),
-            max_tokens=config.get('max_tokens', 1024),
-        )
-        
-        content = completion.choices[0].message.content.strip()
-        
-        if not content:
-            content = 'хм...'
-        
-        print(f'✅ Получен ответ: {content[:50]}...')
-        return {'content': content}
-        
+        # Используем aiohttp
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            payload = {
+                'model': MODEL_NAME,
+                'messages': full_messages,
+                'temperature': config.get('temperature', 0.8),
+                'max_tokens': config.get('max_tokens', 1024),
+            }
+            
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {ONLYSQ_API_KEY}'
+            }
+            
+            print(f'📦 Payload: {json.dumps(payload, ensure_ascii=False)[:200]}...')
+            
+            async with session.post(ONLYSQ_API_URL, json=payload, headers=headers) as resp:
+                print(f'📡 Статус ответа: {resp.status}')
+                
+                if resp.status == 200:
+                    result = await resp.json()
+                    print(f'📥 Ответ получен: {json.dumps(result, ensure_ascii=False)[:200]}...')
+                    
+                    message = result.get('choices', [{}])[0].get('message', {})
+                    content = message.get('content', '').strip()
+                    
+                    if not content:
+                        content = 'хм...'
+                    
+                    print(f'✅ Извлечен контент: {content[:50]}...')
+                    return {'content': content}
+                else:
+                    error_text = await resp.text()
+                    print(f'❌ API ошибка {resp.status}: {error_text}')
+                    return {'content': 'не могу ответить сейчас...'}
+                    
+    except asyncio.TimeoutError:
+        print(f'⏱️ Таймаут запроса к API')
+        return {'content': 'превышено время ожидания...'}
     except Exception as e:
         print(f'❌ Ошибка API: {e}')
         import traceback
@@ -1655,7 +1674,7 @@ async def main():
         print(f'👤 Аккаунт: {me.username or me.first_name} (ID: {OWNER_ID})')
         print(f'🤖 AI: {MODEL_NAME} @ {ONLYSQ_API_URL}')
         print(f'\n🆕 НОВЫЕ ВОЗМОЖНОСТИ:')
-        print('✅ Новый OpenAI SDK для ИИ')
+        print('✅ Исправлен API для ИИ (aiohttp + детальные логи)')
         print('✅ ИИ отвечает как человек (с маленькой буквы)')
         print('🎤 Поддержка голосовых сообщений')
         print('🖼️ Поддержка изображений')
