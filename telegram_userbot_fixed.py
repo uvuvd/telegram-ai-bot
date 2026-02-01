@@ -5,7 +5,7 @@ import sys
 import base64
 from datetime import datetime, timedelta
 from pathlib import Path
-import aiohttp
+from openai import OpenAI
 from telethon import TelegramClient, events
 from telethon.errors import RPCError
 
@@ -14,8 +14,8 @@ API_ID = int(os.environ.get('API_ID', '39678712'))
 API_HASH = os.environ.get('API_HASH', '3089ac53d532e75deb5dd641e4863d49')
 PHONE = os.environ.get('PHONE', '+919036205120')
 
-ONLYSQ_API_URL = os.environ.get('ONLYSQ_API_URL', 'https://api.onlysq.ru/v2/chat/completions')
-ONLYSQ_API_KEY = os.environ.get('ONLYSQ_API_KEY', '')
+ONLYSQ_API_URL = 'https://api.onlysq.ru/ai/openai'
+ONLYSQ_API_KEY = 'openai'
 MODEL_NAME = 'gemini-3-flash'
 
 DB_FILE = 'messages.json'
@@ -36,6 +36,12 @@ COMMAND_PREFIXES = ['.saver', '.deleted', '.anim', '.замолчи', '.гово
 
 user_selection_state = {}
 db = {}
+
+# Инициализация OpenAI клиента
+openai_client = OpenAI(
+    base_url=ONLYSQ_API_URL,
+    api_key=ONLYSQ_API_KEY,
+)
 
 # ============ БАЗОВЫЕ ФУНКЦИИ БД ============
 def load_db():
@@ -490,6 +496,7 @@ async def get_ai_response(messages, include_voice=None, include_image=None):
             {'role': 'system', 'content': config.get('system_prompt', 'ты помощник')}
         ] + messages
         
+        # Если есть голос или изображение, обрабатываем последнее сообщение
         if include_voice or include_image:
             last_msg = full_messages[-1]
             content_parts = []
@@ -534,37 +541,21 @@ async def get_ai_response(messages, include_voice=None, include_image=None):
             if content_parts:
                 full_messages[-1]['content'] = content_parts
         
-        ssl_context = aiohttp.TCPConnector(ssl=False)
+        # Используем OpenAI SDK
+        completion = openai_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=full_messages,
+            temperature=config.get('temperature', 0.8),
+            max_tokens=config.get('max_tokens', 1024),
+        )
         
-        async with aiohttp.ClientSession(connector=ssl_context, timeout=aiohttp.ClientTimeout(total=120)) as session:
-            payload = {
-                'model': MODEL_NAME,
-                'messages': full_messages,
-                'temperature': config.get('temperature', 0.8),
-                'max_tokens': config.get('max_tokens', 1024),
-            }
-            
-            headers = {
-                'Content-Type': 'application/json'
-            }
-            
-            if ONLYSQ_API_KEY:
-                headers['Authorization'] = f'Bearer {ONLYSQ_API_KEY}'
-            
-            async with session.post(ONLYSQ_API_URL, json=payload, headers=headers) as resp:
-                if resp.status == 200:
-                    result = json.loads(await resp.text())
-                    message = result.get('choices', [{}])[0].get('message', {})
-                    content = message.get('content', '').strip()
-                    
-                    if not content:
-                        content = 'хм...'
-                    
-                    return {'content': content}
-                else:
-                    error_text = await resp.text()
-                    print(f'❌ API ошибка {resp.status}: {error_text}')
-                    return {'content': 'не могу ответить сейчас...'}
+        content = completion.choices[0].message.content.strip()
+        
+        if not content:
+            content = 'хм...'
+        
+        return {'content': content}
+        
     except Exception as e:
         print(f'❌ Ошибка API: {e}')
         import traceback
@@ -611,6 +602,255 @@ async def register_command_message(chat_id, message_id):
 
 
 # ============ ОБРАБОТЧИКИ КОМАНД ============
+
+async def handle_saver_commands(event, message_text):
+    chat_id = event.chat_id
+    await delete_previous_command(chat_id)
+    
+    if message_text.lower() in ['.saver', '.saver help', '.saver помощь']:
+        help_text = '''💾 **АВТОСОХРАНЕНИЕ**
+
+📊 **СТАТУС:**
+• `.saver status` - настройки
+
+🔧 **НАСТРОЙКА:**
+• `.saver private вкл/выкл` - ЛС
+• `.saver groups вкл/выкл` - группы
+• `.saver add` - этот чат
+• `.saver remove` - этот чат
+• `.saver list` - список чатов
+
+📁 **ЧТО СОХРАНЯТЬ:**
+• `.saver media вкл/выкл` - фото/видео
+• `.saver text вкл/выкл` - текст
+• `.saver voice вкл/выкл` - голосовые
+• `.saver ttl вкл/выкл` - скоротечные
+
+🗑️ `.deleted` - удаленные'''
+        msg = await event.respond(help_text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.saver status':
+        config = load_saver_config()
+        text = f'''📊 **СТАТУС АВТОСОХРАНЕНИЯ:**
+
+📥 **РЕЖИМЫ:**
+• Личные: {"✅" if config["save_private"] else "❌"}
+• Группы: {"✅" if config["save_groups"] else "❌"}
+• Чатов: {len(config["save_channels"])}
+
+💾 **ЧТО СОХРАНЯЕМ:**
+• Медиа: {"✅" if config["save_media"] else "❌"}
+• Текст: {"✅" if config["save_text"] else "❌"}
+• Голос: {"✅" if config["save_voice"] else "❌"}
+• Скоротечные: {"✅" if config["save_ttl_media"] else "❌"}'''
+        msg = await event.respond(text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() in ['.saver private вкл', '.saver private выкл']:
+        config = load_saver_config()
+        config['save_private'] = 'вкл' in message_text
+        save_saver_config(config)
+        msg = await event.respond(f'{"✅ Личные ВКЛ" if config["save_private"] else "❌ Личные ВЫКЛ"}')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() in ['.saver groups вкл', '.saver groups выкл']:
+        config = load_saver_config()
+        config['save_groups'] = 'вкл' in message_text
+        save_saver_config(config)
+        msg = await event.respond(f'{"✅ Группы ВКЛ" if config["save_groups"] else "❌ Группы ВЫКЛ"}')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.saver add':
+        config = load_saver_config()
+        chat_id_str = str(chat_id)
+        if chat_id_str not in config['save_channels']:
+            config['save_channels'].append(chat_id_str)
+            save_saver_config(config)
+            msg = await event.respond('✅ Чат добавлен!')
+        else:
+            msg = await event.respond('⚠️ Уже добавлен!')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.saver remove':
+        config = load_saver_config()
+        chat_id_str = str(chat_id)
+        if chat_id_str in config['save_channels']:
+            config['save_channels'].remove(chat_id_str)
+            save_saver_config(config)
+            msg = await event.respond('❌ Чат удален!')
+        else:
+            msg = await event.respond('⚠️ Не был добавлен!')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.saver list':
+        config = load_saver_config()
+        if not config['save_channels']:
+            text = '📭 Нет чатов'
+        else:
+            text = f'📋 **Чаты ({len(config["save_channels"])}):**\n\n'
+            for cid in config['save_channels']:
+                text += f'• `{cid}`\n'
+        msg = await event.respond(text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() in ['.saver media вкл', '.saver media выкл']:
+        config = load_saver_config()
+        config['save_media'] = 'вкл' in message_text
+        save_saver_config(config)
+        msg = await event.respond(f'{"✅ Медиа ВКЛ" if config["save_media"] else "❌ Медиа ВЫКЛ"}')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() in ['.saver text вкл', '.saver text выкл']:
+        config = load_saver_config()
+        config['save_text'] = 'вкл' in message_text
+        save_saver_config(config)
+        msg = await event.respond(f'{"✅ Текст ВКЛ" if config["save_text"] else "❌ Текст ВЫКЛ"}')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() in ['.saver voice вкл', '.saver voice выкл']:
+        config = load_saver_config()
+        config['save_voice'] = 'вкл' in message_text
+        save_saver_config(config)
+        msg = await event.respond(f'{"✅ Голос ВКЛ" if config["save_voice"] else "❌ Голос ВЫКЛ"}')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() in ['.saver ttl вкл', '.saver ttl выкл']:
+        config = load_saver_config()
+        config['save_ttl_media'] = 'вкл' in message_text
+        save_saver_config(config)
+        msg = await event.respond(f'{"✅ Скоротечные ВКЛ" if config["save_ttl_media"] else "❌ Скоротечные ВЫКЛ"}')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    return False
+
+async def handle_deleted_commands(event, message_text):
+    chat_id = event.chat_id
+    await delete_previous_command(chat_id)
+    
+    if message_text.lower() in ['.deleted', '.deleted help']:
+        help_text = '''🗑️ **УДАЛЕННЫЕ СООБЩЕНИЯ**
+
+📊 **ПРОСМОТР:**
+• `.deleted list` - список
+• `.deleted list <N>` - последние N
+• `.deleted chat` - этот чат
+
+🗑️ **ОЧИСТКА:**
+• `.deleted clear` - этот чат
+• `.deleted clear all` - все
+
+💡 *Сохраняются:*
+• Текст сообщений
+• Медиафайлы (если включено)
+• Дата/время удаления'''
+        msg = await event.respond(help_text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower().startswith('.deleted list'):
+        parts = message_text.split()
+        limit = 10
+        if len(parts) > 2 and parts[2].isdigit():
+            limit = int(parts[2])
+        
+        db_del = load_deleted_messages_db()
+        all_deleted = []
+        for chat_key, messages in db_del.items():
+            all_deleted.extend(messages)
+        
+        if not all_deleted:
+            text = '📭 Нет удаленных'
+        else:
+            all_deleted.sort(key=lambda x: x.get('deleted_at', ''), reverse=True)
+            text = f'🗑️ **Удаленные ({len(all_deleted)}):**\n\n'
+            for msg in all_deleted[:limit]:
+                sender = msg.get('sender_name', 'Неизвестно')
+                text_content = msg.get('text', '')[:50]
+                deleted_at = msg.get('deleted_at', '')[:16]
+                text += f'👤 {sender}\n'
+                if text_content:
+                    text += f'📝 {text_content}\n'
+                text += f'🗑️ {deleted_at}\n\n'
+            
+            if len(all_deleted) > limit:
+                text += f'\n📋 Показано {limit} из {len(all_deleted)}'
+        
+        msg = await event.respond(text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.deleted chat':
+        db_del = load_deleted_messages_db()
+        chat_key = str(chat_id)
+        
+        if chat_key not in db_del or not db_del[chat_key]:
+            text = '📭 Нет удаленных'
+        else:
+            messages = db_del[chat_key]
+            text = f'🗑️ **Удаленные ({len(messages)}):**\n\n'
+            for msg in messages[-10:]:
+                sender = msg.get('sender_name', 'Неизвестно')
+                text_content = msg.get('text', '')[:50]
+                deleted_at = msg.get('deleted_at', '')[:16]
+                text += f'👤 {sender}\n'
+                if text_content:
+                    text += f'📝 {text_content}\n'
+                text += f'🗑️ {deleted_at}\n\n'
+        
+        msg = await event.respond(text)
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.deleted clear':
+        db_del = load_deleted_messages_db()
+        chat_key = str(chat_id)
+        if chat_key in db_del:
+            count = len(db_del[chat_key])
+            db_del[chat_key] = []
+            save_deleted_messages_db(db_del)
+            msg = await event.respond(f'🗑️ Очищено {count} сообщений!')
+        else:
+            msg = await event.respond('📭 Нет сообщений!')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    if message_text.lower() == '.deleted clear all':
+        db_del = load_deleted_messages_db()
+        count = sum(len(messages) for messages in db_del.values())
+        save_deleted_messages_db({})
+        msg = await event.respond(f'🗑️ Очищено {count} сообщений!')
+        await event.delete()
+        await register_command_message(chat_id, msg.id)
+        return True
+    
+    return False
 
 async def handle_ai_config_commands(event, message_text):
     chat_id = event.chat_id
@@ -1329,19 +1569,32 @@ async def outgoing_handler(event):
             await event.delete()
             return
         
-        # Обработка команд
+        # Обработка команд .saver
+        if message_text.lower().startswith('.saver'):
+            if await handle_saver_commands(event, message_text):
+                return
+        
+        # Обработка команд .deleted
+        if message_text.lower().startswith('.deleted'):
+            if await handle_deleted_commands(event, message_text):
+                return
+        
+        # Обработка команд .конфиг
         if message_text.lower().startswith('.конфиг'):
             if await handle_ai_config_commands(event, message_text):
                 return
         
+        # Обработка команд .ии
         if message_text.lower().startswith('.ии'):
             if await handle_ai_chats_commands(event, message_text):
                 return
         
+        # Обработка команд .замолчи/.говори
         if message_text.lower().startswith('.замолчи') or message_text.lower().startswith('.говори'):
             if await handle_mute_commands(event, message_text):
                 return
         
+        # Обработка команд .anim
         if message_text.lower().startswith('.anim'):
             if await handle_animation_commands(event, message_text):
                 return
@@ -1387,6 +1640,7 @@ async def main():
         print(f'👤 Аккаунт: {me.username or me.first_name} (ID: {OWNER_ID})')
         print(f'🤖 AI: {MODEL_NAME} @ {ONLYSQ_API_URL}')
         print(f'\n🆕 НОВЫЕ ВОЗМОЖНОСТИ:')
+        print('✅ Новый OpenAI SDK для ИИ')
         print('✅ ИИ отвечает как человек (с маленькой буквы)')
         print('🎤 Поддержка голосовых сообщений')
         print('🖼️ Поддержка изображений')
@@ -1395,12 +1649,12 @@ async def main():
         print('⚡ Мгновенное сохранение удаленных')
         print('📤 Автопересылка медиа в избранное')
         print('⏱️ Сохранение скоротечных медиа')
-        print('🔓 Без SSL verification')
         print('\n📝 ОСНОВНЫЕ КОМАНДЫ:')
+        print('   .saver       - автосохранение')
+        print('   .deleted     - удаленные')
         print('   .ии          - управление ИИ')
         print('   .конфиг      - настройка личности')
         print('   .замолчи     - заглушка')
-        print('   .saver help  - сохранение')
         print('   .anim help   - анимации')
         print('   .del         - удалить меню')
         print('\n🎧 Слушаю...\n')
@@ -1421,5 +1675,3 @@ if __name__ == '__main__':
     except Exception as e:
         print(f'\n❌ Критическая ошибка: {e}')
         sys.exit(1)
-
-
