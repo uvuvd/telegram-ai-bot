@@ -14,7 +14,7 @@ API_ID = int(os.environ.get('API_ID', '39678712'))
 API_HASH = os.environ.get('API_HASH', '3089ac53d532e75deb5dd641e4863d49')
 PHONE = os.environ.get('PHONE', '+919036205120')
 
-ONLYSQ_API_URL = os.environ.get('ONLYSQ_API_URL', 'https://api.onlysq.ru/ai/models')
+ONLYSQ_API_URL = os.environ.get('ONLYSQ_API_URL', 'https://api.onlysq.ru/v1/chat/completions')
 ONLYSQ_API_KEY = os.environ.get('ONLYSQ_API_KEY', '')
 MODEL_NAME = 'gemini-3-flash'
 
@@ -1421,3 +1421,4 @@ if __name__ == '__main__':
     except Exception as e:
         print(f'\n❌ Критическая ошибка: {e}')
         sys.exit(1)
+
