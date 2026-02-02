@@ -19,7 +19,7 @@ PHONE = os.environ.get('PHONE', '+919036205120')
 # OpenRouter API
 AI_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
 AI_API_KEY = os.environ.get('OPENROUTER_API_KEY',
-                            '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')
+                            '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')
 MODEL_NAME = 'openai/gpt-5-mini'
 
 # Файлы БД
@@ -1979,3 +1979,4 @@ if __name__ == '__main__':
 
         traceback.print_exc()
         sys.exit(1)
+
