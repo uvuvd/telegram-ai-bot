@@ -19,7 +19,7 @@ PHONE = os.environ.get('PHONE', '+919036205120')
 # Новое API
 AI_API_URL = 'https://api.onlysq.ru/ai/openai/chat/completions'
 AI_API_KEY = 'openai'  # Базовый ключ
-MODEL_NAME = 'gpt-5-mini'
+MODEL_NAME = 'gpt-5'
 
 # Файлы БД
 DB_FILE = 'messages.json'
@@ -1877,4 +1877,5 @@ if __name__ == '__main__':
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
 
