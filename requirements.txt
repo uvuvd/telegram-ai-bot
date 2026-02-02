@@ -11,7 +11,8 @@ pyasn1==0.6.2
 rsa==4.9.1
 Telethon==1.42.0
 yarl==1.22.0
-cryptg==0.4.0
+
+
 
 
 
