@@ -17,9 +17,9 @@ API_HASH = os.environ.get('API_HASH', '3089ac53d532e75deb5dd641e4863d49')
 PHONE = os.environ.get('PHONE', '+919036205120')
 
 # Новое API
-AI_API_URL = 'http://api.onlysq.ru/ai/v2'
+AI_API_URL = 'https://api.onlysq.ru/ai/openai/chat/completions'
 AI_API_KEY = 'openai'  # Базовый ключ
-MODEL_NAME = 'gemini-3-flash'
+MODEL_NAME = 'gpt-5-mini'
 
 # Файлы БД
 DB_FILE = 'messages.json'
@@ -1877,3 +1877,4 @@ if __name__ == '__main__':
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
